@@ -42,6 +42,7 @@ node im3-esim.js run        # wizard interaktif mode lama
 6. 📱  Ambil QR eSIM (order sudah paid)
 7. 📋  Riwayat Pesanan
 8. 💰  Riwayat Pembayaran
+9. 💎  Database Nomor Cantik
 0. 🚪  Keluar
 ```
 
@@ -88,6 +89,31 @@ node im3-esim.js run        # wizard interaktif mode lama
 - **Kode status `paycheck`:** `2` = menunggu bayar, `3` = PAID,
   `21` = QRIS kedaluwarsa (order tidak dibayar dalam 10 menit).
   Untuk `esim/status` beda arti: `1` = In-Progress, `2` = Success.
+- **Database Nomor Cantik (menu 9 + subcommand `harvest` / `db`):**
+  nomor cantik disapu dari pool dan disimpan ID-nya saja — **tanpa
+  order** — ke `db/nomorcantik.json` (file lokal, di-gitignore).
+  Kriteria: **10/11 digit cukup triple (`xxx`) atau quartet
+  (`xxxx`); 12 digit minimal quartet** (triple saja tidak cukup).
+  Sekali jalan:
+  `node im3-esim.js harvest [--rounds 1] [--delay 500]`, atau jalan
+  terus: `node im3-esim.js harvest --loop [--interval-sec 300]`
+  (putaran berulang sampai Ctrl+C, database tersimpan tiap putaran).
+  Satu putaran = sapuan 10 kata kunci (`000, 111, ..., 999`) × 4
+  kategori = 40 panggilan; nomor baru dicek ketersediaannya dulu
+  sebelum disimpan. Lihat isi database: `node im3-esim.js db
+  [--digits 10,11] [--pattern triple|quartet] [--search 111]
+  [--check]` (`--check` = validasi ulang ketersediaan). Dari menu 9,
+  nomor tersimpan bisa langsung di-order (ketersediaan dicek ulang
+  ke server dulu; kalau sudah tidak tersedia, nomor itu dihapus dari
+  database). **Catatan jujur dari uji live 15 Nov 2026:** dengan
+  kriteria awal (hanya 10/11 digit), 6 putaran (240 panggilan, 372
+  nomor dicek) menghasilkan **0 nomor** — pool saat ini didominasi
+  nomor 12 digit. Setelah kriteria diperluas (12 digit minimal
+  quartet), 3 putaran langsung menemukan **5 nomor quartet 12 digit**
+  (semuanya `4444`). Nomor 10/11 digit bertriple tetap sangat jarang
+  — database terisi terutama dari quartet 12 digit, dan makin
+  banyak kalau `--loop` jalan terus saat pool berputar. Pool tiap
+  paket bisa berbeda; default paket 4324 (5GB Rp1).
 - **Enter = ya:** di prompt "Sudah bayar? Lanjut polling... (ya/tidak)",
   tekan Enter saja sudah dihitung `ya`.
 - **Nama & email random:** nama diambil dari daftar nama Indonesia

@@ -912,6 +912,82 @@ async function paymentHistoryMenu() {
   }
 }
 
+// ---------------------------------------------------------------- database nomor cantik
+async function dbMenu() {
+  section('💎 Database Nomor Cantik');
+  const sum = core.summarizeDb(core.loadDb());
+  console.log(`Total tersimpan: ${paint('bold', String(sum.total))} nomor ` +
+    `(${(sum.byDigits['10'] || 0)}x 10 digit, ${(sum.byDigits['11'] || 0)}x 11 digit, ` +
+    `${(sum.byDigits['12'] || 0)}x 12 digit; ` +
+    `${(sum.byPattern.triple || 0)} triple, ${(sum.byPattern.quartet || 0)} quartet)`);
+  console.log(paint('gray', 'Nomor di sini hanya ID yang pernah terlihat — sebelum order, ketersediaan dicek ulang ke server.'));
+  const act = await askChoice('Pilih: [1] harvest sekarang, [2] lihat nomor, [3] order nomor dari database, [0] kembali: ', ['1', '2', '3', '0']);
+  if (act === '1') {
+    const roundsRaw = await ask('Berapa putaran sapuan? [1 putaran ≈ 40 panggilan, Enter = 1, ketik "loop" = jalan terus sampai Ctrl+C]: ');
+    const loop = roundsRaw.toLowerCase() === 'loop';
+    const rounds = loop ? 1 : Math.max(Number(roundsRaw || 1) || 1, 1);
+    console.log(paint('gray', loop
+      ? 'Mode LOOP — putaran berulang tiap 5 menit sampai Ctrl+C. Database tersimpan tiap putaran.'
+      : `Menyapu ${rounds} putaran...`));
+    await core.harvestNumbers({
+      rounds, loop, intervalSec: 300, delayMs: 500,
+      onProgress: (p) => {
+        if (p.roundDone) {
+          process.stdout.write(`\n   putaran ${p.round} selesai — baru: ${p.newFound} nomor, total dicek: ${p.checked}`);
+          return;
+        }
+        if (p.rateLimited) {
+          process.stdout.write('\n   ⚠️ kena throttle (429) — menunggu, lalu coba lagi...');
+          return;
+        }
+        process.stdout.write(`\r   putaran ${p.round} — kata kunci "${p.term}" — dicek ${p.checked}, baru ${p.newFound}...`);
+      },
+    });
+    const s2 = core.summarizeDb(core.loadDb());
+    console.log(`\n${ok(`Database sekarang: ${s2.total} nomor ` +
+      `(${(s2.byDigits['10'] || 0)}x 10 digit, ${(s2.byDigits['11'] || 0)}x 11 digit, ` +
+      `${(s2.byDigits['12'] || 0)}x 12 digit; ` +
+      `${(s2.byPattern.triple || 0)} triple, ${(s2.byPattern.quartet || 0)} quartet).`)}`);
+  } else if (act === '2') {
+    const digitsRaw = await ask('Filter digit (10, 11, 12 — Enter = semua): ');
+    const pattern = (await ask('Filter pola (triple / quartet — Enter = semua): ')).toLowerCase();
+    const digits = new Set(digitsRaw.split(',').map((s) => Number(s.trim())).filter((n) => n > 0));
+    const list = core.queryDb(core.loadDb(), {
+      digits, pattern: pattern === 'triple' || pattern === 'quartet' ? pattern : null, limit: 50,
+    });
+    if (!list.length) { console.log(info('Tidak ada nomor yang cocok — harvest dulu.')); return; }
+    console.log(paint('gray', `Menampilkan ${list.length} nomor (maks 50):`));
+    list.forEach((e, i) => {
+      const avail = e.available === true ? paint('green', 'tersedia')
+        : e.available === false ? paint('red', 'tidak tersedia') : paint('gray', 'belum dicek');
+      console.log(`  ${paint('cyan', String(i + 1) + '.')} ${paint('bold', e.number)} (${e.digits} digit, ${e.pattern}: ${e.runs.join(',')}) [${e.category}] id=${e.id} — ${avail}`);
+    });
+  } else if (act === '3') {
+    const list = core.queryDb(core.loadDb(), { limit: 50 });
+    if (!list.length) { console.log(info('Database kosong — harvest dulu (pilihan 1).')); return; }
+    list.forEach((e, i) => {
+      console.log(`  ${paint('cyan', String(i + 1) + '.')} ${paint('bold', e.number)} (${e.digits} digit, ${e.pattern}: ${e.runs.join(',')}) [${e.category}] id=${e.id}`);
+    });
+    const sel = await ask('\nPilih nomor [1-..], [Enter] kembali: ');
+    if (!sel) return;
+    const picked = list[Number(sel) - 1];
+    if (!picked) { console.log(err('Pilihan tidak ada.')); return; }
+    console.log(paint('gray', 'Mengecek ketersediaan nomor ke server...'));
+    const avail = await core.checkNumber(picked.id);
+    if (avail && avail.available === false) {
+      console.log(err(`Nomor ${picked.number} sudah tidak tersedia — dihapus dari database.`));
+      const db = core.loadDb();
+      db.numbers = db.numbers.filter((e) => e.number !== picked.number);
+      core.saveDb(db);
+      return;
+    }
+    console.log(ok(`Nomor ${picked.number} masih tersedia — lanjut order.`));
+    const pkgs = await core.listPackages();
+    const pkg = pkgs.find((p) => p.id === picked.package_id) || pkgs[0];
+    await orderFlow({ pkg, chosen: { id: picked.id, number: picked.number, label: picked.category } });
+  }
+}
+
 // ---------------------------------------------------------------- main
 async function mainMenu() {
   banner();
@@ -926,9 +1002,10 @@ ${paint('bold', 'MENU UTAMA')}
   ${paint('cyan', '6.')} 📱  Ambil QR eSIM (order sudah paid)
   ${paint('cyan', '7.')} 📋  Riwayat Pesanan
   ${paint('cyan', '8.')} 💰  Riwayat Pembayaran
+  ${paint('cyan', '9.')} 💎  Database Nomor Cantik
   ${paint('cyan', '0.')} 🚪  Keluar
 `);
-    const choice = await askChoice(paint('bold', 'Pilih [0-8]: '), ['0', '1', '2', '3', '4', '5', '6', '7', '8']);
+    const choice = await askChoice(paint('bold', 'Pilih [0-9]: '), ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9']);
     try {
       if (choice === '0') {
         console.log(paint('green', '\nSampai jumpa! 👋'));
@@ -953,6 +1030,7 @@ ${paint('bold', 'MENU UTAMA')}
       else if (choice === '6') await esimMenu();
       else if (choice === '7') await historyMenu();
       else if (choice === '8') await paymentHistoryMenu();
+      else if (choice === '9') await dbMenu();
     } catch (e) {
       console.log('\n' + err(e && e.message ? e.message.split('\n')[0] : String(e)));
     }

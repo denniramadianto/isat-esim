@@ -19,6 +19,10 @@
  *   node im3-esim.js status --order-id 950002009xxx [--json]
  *   node im3-esim.js esim --order-code "<order_code dari create>" [--json]
  *   node im3-esim.js watch --order-id 950002009xxx --order-code "<...>" [--json]
+ *   node im3-esim.js harvest [--package 4324] [--rounds 1] [--delay 500]
+ *       [--loop] [--interval-sec 300] [--json]
+ *   node im3-esim.js db [--digits 10,11] [--pattern triple|quartet]
+ *       [--search 111] [--limit 50] [--check] [--json]
  *
  * PERINGATAN: `order` membuat order QRIS NYATA (Rp1 untuk paket 5GB).
  * File out/order-*.json memuat activation_code eSIM — JANGAN disebar.
@@ -250,6 +254,148 @@ function parseCrit(args) {
   return crit;
 }
 
+// ------------------------------------------------------------ database nomor cantik
+// Database lokal (JSON) berisi nomor cantik yang pernah terlihat di pool
+// (10/11 digit triple/quartet, 12 digit minimal quartet) — diambil
+// ID-nya saja, TANPA order.
+// Dipakai untuk "memanggil lagi" nanti: pilih dari database, cek masih
+// tersedia (checkNumber), baru order. Bukan jaminan nomor masih ada:
+// pool berubah terus, dan ID bisa kedaluwarsa / sudah diambil orang.
+// File: ./db/nomorcantik.json (di-gitignore, data lokal saja).
+const DB_DIR = path.join(__dirname, 'db');
+const DB_FILE = path.join(DB_DIR, 'nomorcantik.json');
+// Kata kunci sapuan: pencarian server itu substring, jadi cari "111"
+// mengembalikan semua nomor yang mengandung 111 (termasuk 1111).
+// 10 kata kunci x 4 kategori = 40 panggilan per putaran.
+const HARVEST_TERMS = ['000', '111', '222', '333', '444', '555', '666', '777', '888', '999'];
+
+function detectRuns(number) {
+  const runs = [];
+  const re = /(.)\1{2,}/g; // deretan 3+ digit sama berurutan
+  let m;
+  while ((m = re.exec(number))) runs.push(m[0]);
+  return runs;
+}
+
+// Kriteria nomor cantik:
+//   - 10/11 digit: triple (xxx) atau quartet (xxxx) sudah cukup.
+//   - 12 digit: minimal quartet (xxxx) — triple saja tidak cukup.
+// Quartet mengandung triple, jadi klasifikasinya "quartet" bila ada
+// deretan >= 4. Null bila tidak memenuhi.
+function classifyNumber(number) {
+  const len = number.length;
+  if (len !== 10 && len !== 11 && len !== 12) return null;
+  const runs = detectRuns(number);
+  if (!runs.length) return null;
+  const hasQuartet = runs.some((r) => r.length >= 4);
+  if (len === 12 && !hasQuartet) return null; // 12 digit: minimal quartet
+  return { pattern: hasQuartet ? 'quartet' : 'triple', runs };
+}
+
+function loadDb() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
+    if (raw && Array.isArray(raw.numbers)) return raw;
+  } catch { /* belum ada / rusak -> mulai kosong */ }
+  return { version: 1, updated_at: null, numbers: [] };
+}
+function saveDb(db) {
+  fs.mkdirSync(DB_DIR, { recursive: true });
+  db.updated_at = new Date().toISOString();
+  const tmp = DB_FILE + '.tmp-' + process.pid;
+  fs.writeFileSync(tmp, JSON.stringify(db, null, 2) + '\n');
+  fs.renameSync(tmp, DB_FILE);
+  return DB_FILE;
+}
+function queryDb(db, { digits, pattern, search, limit } = {}) {
+  let list = db.numbers;
+  if (digits && digits.size) list = list.filter((e) => digits.has(e.digits));
+  if (pattern) list = list.filter((e) => e.pattern === pattern);
+  if (search) list = list.filter((e) => e.number.includes(search));
+  return limit ? list.slice(0, limit) : list;
+}
+function summarizeDb(db) {
+  const byDigits = {};
+  const byPattern = {};
+  for (const e of db.numbers) {
+    byDigits[e.digits] = (byDigits[e.digits] || 0) + 1;
+    byPattern[e.pattern] = (byPattern[e.pattern] || 0) + 1;
+  }
+  return { total: db.numbers.length, byDigits, byPattern, updated_at: db.updated_at };
+}
+
+// Satu putaran = sapu semua kata kunci x semua kategori. Nomor yang
+// lolos klasifikasi dan belum ada di database dicek ketersediaannya
+// (1 panggilan per nomor baru) lalu disimpan. Nomor yang sudah ada
+// hanya diperbarui last_seen-nya. Mode loop: putaran berulang tiap
+// intervalSec sampai proses dimatikan (Ctrl+C) — untuk dijalankan
+// terus-menerus di Termux/PC/server.
+async function harvestNumbers({ packageId = 4324, categories, terms = HARVEST_TERMS, rounds = 1, delayMs = 500, loop = false, intervalSec = 300, onProgress }) {
+  const cats = categories || CATEGORIES.map((c) => c.key);
+  const db = loadDb();
+  const byNumber = new Map(db.numbers.map((e) => [e.number, e]));
+  let calls = 0;
+  let checked = 0;
+  let newFound = 0;
+  let rateLimited = false;
+  let rateLimitStrikes = 0;
+  let round = 0;
+  for (;;) {
+    round++;
+    for (const term of terms) {
+      let lists;
+      try {
+        lists = await Promise.all(cats.map((c) => listNumbers(packageId, c, term)));
+        rateLimitStrikes = 0;
+      } catch (err) {
+        if (err && err.status === 429) {
+          rateLimitStrikes++;
+          rateLimited = true;
+          if (onProgress) onProgress({ round, term, calls, checked, newFound, rateLimited: true });
+          if (rateLimitStrikes >= 3) {
+            return { rounds: round, calls, checked, newFound, total: byNumber.size, rateLimited: true };
+          }
+          await sleep(Math.max(err.retryAfterSec || 10, 5) * 1000);
+          continue;
+        }
+        throw err;
+      }
+      calls += cats.length;
+      for (const list of lists) {
+        for (const n of list) {
+          checked++;
+          const cls = classifyNumber(n.number);
+          if (!cls) continue;
+          const prev = byNumber.get(n.number);
+          if (prev) { prev.last_seen = new Date().toISOString(); continue; }
+          let available = null;
+          try {
+            const r = await checkNumber(n.id);
+            available = r ? r.available !== false : null;
+          } catch { /* biarkan null — dicek ulang saat order */ }
+          const entry = {
+            id: n.id, number: n.number, digits: n.number.length,
+            pattern: cls.pattern, runs: cls.runs,
+            category: n.category, package_id: Number(packageId),
+            found_at: new Date().toISOString(), last_seen: new Date().toISOString(),
+            available, checked_at: available === null ? null : new Date().toISOString(),
+          };
+          byNumber.set(n.number, entry);
+          db.numbers.push(entry);
+          newFound++;
+        }
+      }
+      if (onProgress) onProgress({ round, term, calls, checked, newFound, rateLimited: false });
+      if (delayMs > 0) await sleep(delayMs);
+    }
+    saveDb(db);
+    if (onProgress) onProgress({ round, calls, checked, newFound, roundDone: true });
+    if (loop) { await sleep(intervalSec * 1000); continue; }
+    if (round >= rounds) break;
+  }
+  return { rounds: round, calls, checked, newFound, total: byNumber.size, rateLimited };
+}
+
 async function checkNumber(numberId) {
   return api('POST', `${BASE}/api/number/status/${numberId}`, {},
     `${BASE}/esim/order/prepaid/number`);
@@ -381,6 +527,81 @@ async function cmdHunt(args) {
     console.log(`  ${i + 1}. ${n.number}  [${n.label}] id=${n.id} (${n.number.length} digit)`);
   });
   return res;
+}
+
+async function cmdHarvest(args) {
+  const packageId = args.package || 4324;
+  const rounds = Number(args.rounds || 1);
+  const delayMs = Number(args.delay || 500);
+  const loop = !!args.loop;
+  const intervalSec = Number(args['interval-sec'] || 300);
+  if (!args.json) {
+    console.log(`\n💎 Harvest nomor cantik (paket ${packageId})`);
+    console.log('   Kriteria: 10/11 digit triple (xxx) / quartet (xxxx); 12 digit minimal quartet');
+    console.log(`   Sapuan: ${HARVEST_TERMS.join(' ')} x 4 kategori = ${HARVEST_TERMS.length * 4} panggilan/putaran`);
+    if (loop) console.log(`   Mode LOOP — putaran berulang tiap ${intervalSec} dtk sampai Ctrl+C.`);
+    else console.log(`   Putaran: ${rounds} | jeda antar kata kunci: ${delayMs}ms`);
+  }
+  const res = await harvestNumbers({
+    packageId, rounds, delayMs, loop, intervalSec,
+    onProgress: args.json ? undefined : (p) => {
+      if (p.roundDone) {
+        process.stdout.write(`\n   putaran ${p.round} selesai — baru: ${p.newFound} nomor, total dicek: ${p.checked}`);
+        return;
+      }
+      if (p.rateLimited) {
+        process.stdout.write('\n   ⚠️ kena throttle (429) — menunggu, lalu coba lagi...');
+        return;
+      }
+      process.stdout.write(`\r   putaran ${p.round} — kata kunci "${p.term}" — dicek ${p.checked}, baru ${p.newFound}...`);
+    },
+  });
+  const summary = summarizeDb(loadDb());
+  if (args.json) return console.log(JSON.stringify({ ...res, db: summary }, null, 2));
+  process.stdout.write('\n');
+  console.log(`\n✅ Harvest selesai (${res.rounds} putaran, ${res.calls} panggilan API, ${res.checked} nomor dicek).`);
+  console.log(`   Baru masuk database: ${res.newFound} nomor.`);
+  console.log(`   Total di database: ${summary.total} nomor ` +
+    `(${summary.byDigits['10'] || 0}x 10 digit, ${summary.byDigits['11'] || 0}x 11 digit, ` +
+    `${summary.byDigits['12'] || 0}x 12 digit; ` +
+    `${summary.byPattern.triple || 0} triple, ${summary.byPattern.quartet || 0} quartet).`);
+  console.log(`   File: ${DB_FILE}`);
+  if (res.rateLimited) console.log('   ⚠️ sempat kena throttle (429) — tambah jeda (--delay) atau interval loop.');
+  return res;
+}
+
+async function cmdDb(args) {
+  const db = loadDb();
+  const digits = new Set((args.digits || '').split(',').map((s) => Number(s.trim())).filter((n) => n > 0));
+  const pattern = (args.pattern || '').trim() || null;
+  const search = (args.search || '').trim() || '';
+  const limit = Number(args.limit || 50);
+  let list = queryDb(db, { digits, pattern, search, limit: 0 });
+  if (args.check) {
+    // Validasi ulang ketersediaan tiap nomor yang tampil.
+    for (const e of list) {
+      try {
+        const r = await checkNumber(e.id);
+        e.available = r ? r.available !== false : null;
+        e.checked_at = new Date().toISOString();
+      } catch { e.available = null; }
+      await sleep(200);
+    }
+    saveDb(db);
+  }
+  list = list.slice(0, limit);
+  if (args.json) return console.log(JSON.stringify(list, null, 2));
+  console.log(`\n💎 Database nomor cantik — ${db.numbers.length} nomor tersimpan (menampilkan ${list.length})`);
+  if (!list.length) {
+    console.log('  (kosong — jalankan: node im3-esim.js harvest)');
+    return list;
+  }
+  list.forEach((e, i) => {
+    const avail = e.available === true ? '✅ tersedia'
+      : e.available === false ? '❌ tidak tersedia' : '❔ belum dicek';
+    console.log(`  ${i + 1}. ${e.number} (${e.digits} digit, ${e.pattern}: ${e.runs.join(',')}) [${e.category}] id=${e.id} — ${avail}`);
+  });
+  return list;
 }
 
 async function cmdOrder(args) {
@@ -578,6 +799,10 @@ im3-esim.js — CLI order eSIM IM3 (tanpa dependensi, Node >= 18)
   node im3-esim.js status --order-id <id> [--json]
   node im3-esim.js esim --order-code "<order_code>" [--json]
   node im3-esim.js watch --order-id <id> --order-code "<order_code>" [--json]
+  node im3-esim.js harvest [--package 4324] [--rounds 1] [--delay 500]
+                       [--loop] [--interval-sec 300] [--json]
+  node im3-esim.js db [--digits 10,11] [--pattern triple|quartet]
+                       [--search 111] [--limit 50] [--check] [--json]
 
 Catatan:
   - create order = order QRIS NYATA dan butuh --confirm (atau "ya" di wizard).
@@ -607,6 +832,8 @@ async function main() {
       case 'status': await cmdStatus(args); break;
       case 'esim': await cmdEsim(args); break;
       case 'watch': await cmdWatch(args, !!args.json); break;
+      case 'harvest': await cmdHarvest(args); break;
+      case 'db': await cmdDb(args); break;
       case 'run': await cmdRun(); break;
       default: console.error(`Perintah tidak dikenal: ${cmd}`); help(); process.exitCode = 1;
     }
@@ -618,4 +845,4 @@ async function main() {
 
 if (require.main === module) main();
 
-module.exports = { listPackages, listNumbers, checkNumber, createOrder, orderDetail, paycheck, esimStatus, huntNumbers, matchNumber };
+module.exports = { listPackages, listNumbers, checkNumber, createOrder, orderDetail, paycheck, esimStatus, huntNumbers, matchNumber, classifyNumber, detectRuns, harvestNumbers, loadDb, saveDb, queryDb, summarizeDb, DB_FILE };
