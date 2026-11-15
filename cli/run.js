@@ -940,14 +940,14 @@ async function dbMenu() {
       rounds, loop, intervalSec, delayMs: 500,
       onProgress: (p) => {
         if (p.roundDone) {
-          process.stdout.write(`\n   putaran ${p.round} selesai — baru: ${p.newFound} nomor, total dicek: ${p.checked}`);
+          process.stdout.write(`\n   putaran ${p.round} selesai — baru: ${p.newFound} nomor, dicek: ${p.checked} (unik: ${p.unique})`);
           return;
         }
         if (p.rateLimited) {
           process.stdout.write('\n   ⚠️ kena throttle (429) — menunggu, lalu coba lagi...');
           return;
         }
-        process.stdout.write(`\r   putaran ${p.round} — kata kunci "${p.term}" — dicek ${p.checked}, baru ${p.newFound}...`);
+        process.stdout.write(`\r   putaran ${p.round} — kata kunci "${p.term}" — dicek ${p.checked} (unik ${p.unique}), baru ${p.newFound}...`);
       },
     });
     const s2 = core.summarizeDb(core.loadDb());

@@ -101,6 +101,11 @@ node im3-esim.js run        # wizard interaktif mode lama
   sampel nomor yang beda. Loop tanpa jeda secara default
   (`--interval-sec 0` = langsung gas); isi detik kalau mau jeda
   antar putaran, misal `--interval-sec 60`.
+  Angka `dicek` di layar harvest = **total nomor yang diperiksa,
+  termasuk yang sudah pernah muncul** (nomor yang sama bisa kembali
+  di kategori, kata kunci, atau putaran lain — pool-nya kecil dan
+  muter). Angka `unik` di sebelahnya = nomor **berbeda** yang pernah
+  terlihat. Yang `baru` = nomor yang baru masuk database.
   Sekali jalan:
   `node im3-esim.js harvest [--rounds 1] [--delay 500]`, atau jalan
   terus: `node im3-esim.js harvest --loop [--interval-sec 300]`

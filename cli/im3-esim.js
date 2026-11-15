@@ -356,8 +356,14 @@ async function harvestNumbers({ packageId = 4324, categories, terms = HARVEST_TE
   const cats = categories || CATEGORIES.map((c) => c.key);
   const db = loadDb();
   const byNumber = new Map(db.numbers.map((e) => [e.number, e]));
+  // checked = total nomor yang diperiksa (termasuk yang sudah pernah
+  // muncul — nomor yang sama bisa kembali di kategori/kata kunci/
+  // putaran lain, karena pool-nya kecil dan muter). unique = nomor
+  // BERBEDA yang pernah terlihat (yang benar-benar unik).
+  const seenNumbers = new Set();
   let calls = 0;
   let checked = 0;
+  let uniqueChecked = 0;
   let newFound = 0;
   let rateLimited = false;
   let rateLimitStrikes = 0;
@@ -378,9 +384,9 @@ async function harvestNumbers({ packageId = 4324, categories, terms = HARVEST_TE
         if (err && err.status === 429) {
           rateLimitStrikes++;
           rateLimited = true;
-          if (onProgress) onProgress({ round, term, calls, checked, newFound, rateLimited: true });
+          if (onProgress) onProgress({ round, term, calls, checked, unique: uniqueChecked, newFound, rateLimited: true });
           if (rateLimitStrikes >= 3) {
-            return { rounds: round, calls, checked, newFound, total: byNumber.size, rateLimited: true };
+            return { rounds: round, calls, checked, unique: uniqueChecked, newFound, total: byNumber.size, rateLimited: true };
           }
           await sleep(Math.max(err.retryAfterSec || 10, 5) * 1000);
           continue;
@@ -391,6 +397,10 @@ async function harvestNumbers({ packageId = 4324, categories, terms = HARVEST_TE
       for (const list of lists) {
         for (const n of list) {
           checked++;
+          if (!seenNumbers.has(n.number)) {
+            seenNumbers.add(n.number);
+            uniqueChecked++;
+          }
           const cls = classifyNumber(n.number);
           if (!cls) continue;
           const prev = byNumber.get(n.number);
@@ -412,15 +422,15 @@ async function harvestNumbers({ packageId = 4324, categories, terms = HARVEST_TE
           newFound++;
         }
       }
-      if (onProgress) onProgress({ round, term, calls, checked, newFound, rateLimited: false });
+      if (onProgress) onProgress({ round, term, calls, checked, unique: uniqueChecked, newFound, rateLimited: false });
       if (delayMs > 0) await sleep(delayMs);
     }
     saveDb(db);
-    if (onProgress) onProgress({ round, calls, checked, newFound, roundDone: true });
+    if (onProgress) onProgress({ round, calls, checked, unique: uniqueChecked, newFound, roundDone: true });
     if (loop) { await sleep(intervalSec * 1000); continue; }
     if (round >= rounds) break;
   }
-  return { rounds: round, calls, checked, newFound, total: byNumber.size, rateLimited };
+  return { rounds: round, calls, checked, unique: uniqueChecked, newFound, total: byNumber.size, rateLimited };
 }
 
 async function checkNumber(numberId) {
@@ -579,20 +589,20 @@ async function cmdHarvest(args) {
     packageId, rounds, delayMs, loop, intervalSec, combo, randomTermsCount,
     onProgress: args.json ? undefined : (p) => {
       if (p.roundDone) {
-        process.stdout.write(`\n   putaran ${p.round} selesai — baru: ${p.newFound} nomor, total dicek: ${p.checked}`);
+        process.stdout.write(`\n   putaran ${p.round} selesai — baru: ${p.newFound} nomor, dicek: ${p.checked} (unik: ${p.unique})`);
         return;
       }
       if (p.rateLimited) {
         process.stdout.write('\n   ⚠️ kena throttle (429) — menunggu, lalu coba lagi...');
         return;
       }
-      process.stdout.write(`\r   putaran ${p.round} — kata kunci "${p.term}" — dicek ${p.checked}, baru ${p.newFound}...`);
+      process.stdout.write(`\r   putaran ${p.round} — kata kunci "${p.term}" — dicek ${p.checked} (unik ${p.unique}), baru ${p.newFound}...`);
     },
   });
   const summary = summarizeDb(loadDb());
   if (args.json) return console.log(JSON.stringify({ ...res, db: summary }, null, 2));
   process.stdout.write('\n');
-  console.log(`\n✅ Harvest selesai (${res.rounds} putaran, ${res.calls} panggilan API, ${res.checked} nomor dicek).`);
+  console.log(`\n✅ Harvest selesai (${res.rounds} putaran, ${res.calls} panggilan API, ${res.checked} nomor dicek — ${res.unique} di antaranya unik).`);
   console.log(`   Baru masuk database: ${res.newFound} nomor.`);
   console.log(`   Total di database: ${summary.total} nomor ` +
     `(${summary.byDigits['10'] || 0}x 10 digit, ${summary.byDigits['11'] || 0}x 11 digit, ` +
