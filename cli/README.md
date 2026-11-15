@@ -53,6 +53,20 @@ node im3-esim.js run        # wizard interaktif mode lama
 - **Hunt Nomor Cantik (menu 2):** setelah ketemu nomor, ada pilihan
   `[1] order dengan nomor ini, [2] hunt lagi, [0] kembali ke menu` —
   nomor hasil hunt tidak hilang begitu saja.
+- **Folder `hasil/`:** setiap QR eSIM yang didapat (lewat order, polling,
+  menu 5, atau riwayat) otomatis tersimpan di `hasil/` dengan **nama file
+  sama** untuk txt dan PNG-nya: `hasil/esim-<order_id>.txt` +
+  `hasil/esim-<order_id>.png`. Isi txt: nomor, paket, Order ID, tanggal
+  order, **berlaku sampai (+45 hari dari order)**, dan activation code.
+  Folder ini berisi data sensitif — sudah masuk `.gitignore`, jangan
+  di-commit.
+- **Ambil QR eSIM (menu 5):** tidak perlu ketik order code lagi — tampil
+  daftar nomor dari riwayat pesanan, pilih nomornya, lalu tampil QR eSIM
+  + data eSIM (nomor, paket, tanggal order, berlaku sampai +45 hari,
+  activation code) + file `hasil/` tersimpan. Kalau order belum ada di
+  riwayat, tetap bisa ketik order code manual.
+- **Enter = ya:** di prompt "Sudah bayar? Lanjut polling... (ya/tidak)",
+  tekan Enter saja sudah dihitung `ya`.
 - **Nama & email random:** nama diambil dari daftar nama Indonesia
   (misal `Sari Laksmana` → `sarilaksmana@sir.my.id`). **Konfirmasi email
   tidak ditanyakan** — otomatis diisi sama dengan email yang dipakai.
@@ -96,9 +110,9 @@ node im3-esim.js hunt --package 4324 --digits 11 --prefix 0815,0855 \
   [--contains 6666] [--ends 123] [--max-attempts 50] [--delay 800] [--json]
 node im3-esim.js order --package 4324 --number-id 6556262 \
   --name "Indira" --email "a@b.id" [--phone 08..] --confirm [--json]
-node im3-esim.js status --order-id 950002009361 [--json]
+node im3-esim.js status --order-id 950002009xxx [--json]
 node im3-esim.js esim --order-code "<order_code>" [--json]
-node im3-esim.js watch --order-id 950002009361 --order-code "<order_code>" [--json]
+node im3-esim.js watch --order-id 950002009xxx --order-code "<order_code>" [--json]
 ```
 
 Flag `--json` mencetak JSON murni — untuk dipakai bot Telegram
@@ -170,7 +184,7 @@ Karena itu CLI ini dibuat defensif:
 
 - `packages` → 9 paket tampil, harga benar (5GB Rp1 s.d. 150GB Rp200.000).
 - `numbers --search 1666` → 8 nomor Regular, id benar.
-- `status --order-id 950002009361` → PAID (status=3), sesuai HAR ke-4.
+- `status --order-id 950002009xxx` → PAID (status=3), sesuai HAR ke-4.
 - `esim --order-code ...` → QR eSIM PNG 250×250 + activation code, sama dengan HAR ke-4.
 - `order` tanpa `--confirm` → ditolak, tidak ada order dibuat.
 - Uji end-to-end dari nol di Termux (15 Nov 2026, 15:38–15:42 WIB):
@@ -183,7 +197,7 @@ Karena itu CLI ini dibuat defensif:
   10 detik) saat status 1, dan hanya gagal kalau QR tetap tidak siap.
 - `run.js`: menu tampil + daftar paket tampil benar; `node im3-esim.js`
   tanpa argumen membuka menu; nama random → email `@sir.my.id` teruji.
-- `hunt --digits 11 --prefix 0815` → ketemu `08155275225` (Premium) setelah
+- `hunt --digits 11 --prefix 0815` → ketemu `0815•••••••` (Premium) setelah
   2 percobaan / 64 nomor, dalam ~3 detik.
 - `hunt --contains 1234` → 8 nomor ketemu dalam 1 percobaan.
 - `hunt --digits 10` → tidak ketemu setelah 94 nomor (sesuai data HAR).

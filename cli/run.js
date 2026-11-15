@@ -28,6 +28,8 @@ const core = require('./im3-esim.js');
 const qrcode = require('./qrcode.js');
 
 const OUT_DIR = path.join(__dirname, 'out');
+const HASIL_DIR = path.join(__dirname, 'hasil'); // hasil akhir order (txt + PNG eSIM)
+const ESIM_VALID_DAYS = 45; // eSIM biasanya kedaluwarsa 45 hari setelah order
 const POLL_SECONDS = 20;
 const ESIM_MAX_TRIES = 12;
 const ESIM_RETRY_SECONDS = 10;
@@ -251,6 +253,61 @@ function saveJson(obj, filename) {
   fs.writeFileSync(file, JSON.stringify(obj, null, 2) + '\n');
   return file;
 }
+
+// ------------------------------------------------- hasil eSIM (folder hasil/)
+const fmtWIB = new Intl.DateTimeFormat('id-ID', {
+  timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit',
+  hour: '2-digit', minute: '2-digit', hour12: false,
+});
+function fmtDateWIB(d) {
+  if (!d) return '-';
+  return fmtWIB.format(d).replace(/\./g, ':') + ' WIB';
+}
+function parseOrderDate(s) {
+  if (!s) return null;
+  const d = new Date(String(s).replace(' ', 'T') + '+07:00');
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+function expiryDate(orderDate) {
+  const d = parseOrderDate(orderDate);
+  if (!d) return null;
+  return new Date(d.getTime() + ESIM_VALID_DAYS * 24 * 60 * 60 * 1000);
+}
+// Simpan hasil eSIM ke folder hasil/ dengan NAMA FILE SAMA:
+//   hasil/esim-<order_id>.png  (QR eSIM)
+//   hasil/esim-<order_id>.txt  (data eSIM: nomor, paket, tanggal, expired, kode aktivasi)
+function saveEsimResult({ orderId, orderNumber, packageName, orderDate, activationCode, qrCode }) {
+  fs.mkdirSync(HASIL_DIR, { recursive: true });
+  const base = `esim-${orderId}`;
+  const pngFile = path.join(HASIL_DIR, `${base}.png`);
+  fs.writeFileSync(pngFile, Buffer.from(qrCode, 'base64'));
+  const made = parseOrderDate(orderDate);
+  const exp = expiryDate(orderDate);
+  const txt = [
+    'eSIM IM3 — data aktivasi',
+    '=========================',
+    `Nomor          : ${orderNumber || '-'}`,
+    `Paket          : ${packageName || '-'}`,
+    `Order ID       : ${orderId}`,
+    `Tanggal order  : ${made ? fmtDateWIB(made) : (orderDate || '-')}`,
+    `Berlaku sampai : ${exp ? fmtDateWIB(exp) + ' (45 hari dari order)' : '±45 hari dari tanggal order'}`,
+    '',
+    `Activation code: ${activationCode}`,
+    '',
+    'Cara pakai: scan QR di file PNG-nya (namanya sama dengan file ini),',
+    'atau masukkan activation code manual di HP (Tambah eSIM).',
+    'Kode ini rahasia — jangan disebar.',
+    '',
+  ].join('\n');
+  const txtFile = path.join(HASIL_DIR, `${base}.txt`);
+  fs.writeFileSync(txtFile, txt);
+  return { pngFile, txtFile };
+}
+function showEsimDates(orderDate) {
+  const exp = expiryDate(orderDate);
+  console.log(`   ${paint('bold', 'Tanggal order  :')} ${orderDate || '-'}`);
+  console.log(`   ${paint('bold', 'Berlaku sampai :')} ${exp ? fmtDateWIB(exp) + ' (45 hari)' : '±45 hari dari tanggal order'}`);
+}
 function readHistory() {
   if (!fs.existsSync(OUT_DIR)) return [];
   return fs.readdirSync(OUT_DIR)
@@ -283,7 +340,7 @@ async function fetchEsimWithRetry(orderCode) {
   throw new Error('QR eSIM belum tersedia setelah menunggu ~2 menit. Coba lagi lewat menu "Ambil QR eSIM".');
 }
 
-async function watchOrder(orderId, orderCode) {
+async function watchOrder(orderId, orderCode, meta = {}) {
   const deadline = Date.now() + 10 * 60 * 1000; // QRIS 10 menit
   console.log(paint('cyan', `\nPolling status order ${orderId} tiap ${POLL_SECONDS} detik (maks ~10 menit)...`));
   for (;;) {
@@ -296,9 +353,17 @@ async function watchOrder(orderId, orderCode) {
       console.log('\n' + ok('QR eSIM didapat:'));
       printQR(esim.activation_code, 'QR eSIM');
       console.log(`   ${paint('bold', 'QR PNG          :')} ${file}`);
+      if (meta.orderNumber) console.log(`   ${paint('bold', 'Nomor           :')} ${meta.orderNumber} — ${meta.packageName || ''}`);
+      showEsimDates(meta.orderDate);
       console.log(`   ${paint('bold', 'Activation code :')} ${esim.activation_code}`);
+      const saved = saveEsimResult({
+        orderId, orderNumber: meta.orderNumber, packageName: meta.packageName,
+        orderDate: meta.orderDate, activationCode: esim.activation_code, qrCode: esim.qrCode,
+      });
+      console.log(`   ${paint('bold', 'Hasil tersimpan :')} ${saved.txtFile}`);
+      console.log(`                     ${saved.pngFile}`);
       console.log(paint('yellow', '   (kode ini rahasia — jangan disebar)'));
-      return { paid: true, qr_png: file, activation_code: esim.activation_code };
+      return { paid: true, qr_png: file, activation_code: esim.activation_code, ...saved };
     }
     console.log(`[${now}] status=${res.status} (menunggu bayar)...`);
     if (Date.now() > deadline) {
@@ -498,8 +563,12 @@ async function orderFlow(preselected) {
     console.log(paint('bold', `   Scan file PNG-nya saja: ${result.qris_png}`));
   }
   console.log(paint('gray', `   QRIS raw: ${result.qris_raw}`));
-  const goWatch = await askChoice('\nSudah bayar? Lanjut polling status sampai paid? (ya/tidak): ', ['ya', 'tidak']);
-  if (goWatch === 'ya') await watchOrder(result.order_id, result.order_code);
+  const goWatch = await askChoice('\nSudah bayar? Lanjut polling status sampai paid? (ya/tidak, Enter = ya): ', ['ya', 'tidak', '']);
+  if (goWatch === 'ya' || goWatch === '') {
+    await watchOrder(result.order_id, result.order_code, {
+      orderNumber: result.order_number, packageName: result.package_name, orderDate: result.order_date,
+    });
+  }
   else {
     console.log(info('Nanti bisa lanjut dari menu "Riwayat Pesanan" atau jalankan:'));
     console.log(paint('gray', `   node im3-esim.js watch --order-id ${result.order_id} --order-code "${result.order_code}"`));
@@ -525,15 +594,50 @@ async function statusMenu() {
 
 async function esimMenu() {
   section('Ambil QR eSIM');
-  const orderCode = await ask('Order code (dari hasil order, diawali huruf acak): ');
-  if (!orderCode) return;
+  const orders = readHistory();
+  let orderCode = '';
+  let meta = {};
+  if (orders.length) {
+    orders.forEach((o, i) => {
+      console.log(`  ${paint('cyan', String(i + 1) + '.')} ${paint('bold', o.order_number)} — ${o.package_name} | Order ${o.order_id} | ${o.order_date || ''}`);
+    });
+    const sel = await ask('\nPilih nomor [1-..], atau ketik order code langsung, [Enter] kembali: ');
+    if (!sel) return;
+    const picked = orders[Number(sel) - 1];
+    if (picked) {
+      orderCode = picked.order_code;
+      meta = { orderId: picked.order_id, orderNumber: picked.order_number, packageName: picked.package_name, orderDate: picked.order_date };
+    } else {
+      orderCode = sel; // dianggap order code yang diketik manual
+    }
+  } else {
+    console.log(info('Belum ada order tersimpan di ./out/.'));
+    orderCode = await ask('Order code (dari hasil order, diawali huruf acak): ');
+    if (!orderCode) return;
+  }
   console.log(info('Mengambil QR eSIM (retry otomatis bila masih In-Progress)...'));
   const esim = await fetchEsimWithRetry(orderCode);
+  if (!meta.orderId) {
+    // order tidak ada di riwayat: coba ambil datanya dari server
+    try {
+      const d = await core.orderDetail(orderCode);
+      meta = { orderId: d.order_code, orderNumber: d.order_number, packageName: d.package_name, orderDate: d.order_date };
+    } catch { /* abaikan — tanggal & nomor tetap kosong */ }
+  }
+  const orderId = meta.orderId || String(Date.now());
   const file = saveB64Png(esim.qrCode, `esim-${Date.now()}.png`);
   console.log('\n' + ok('QR eSIM didapat:'));
   printQR(esim.activation_code, 'QR eSIM');
   console.log(`   ${paint('bold', 'QR PNG          :')} ${file}`);
+  if (meta.orderNumber) console.log(`   ${paint('bold', 'Nomor           :')} ${meta.orderNumber} — ${meta.packageName || ''}`);
+  showEsimDates(meta.orderDate);
   console.log(`   ${paint('bold', 'Activation code :')} ${esim.activation_code}`);
+  const saved = saveEsimResult({
+    orderId, orderNumber: meta.orderNumber, packageName: meta.packageName,
+    orderDate: meta.orderDate, activationCode: esim.activation_code, qrCode: esim.qrCode,
+  });
+  console.log(`   ${paint('bold', 'Hasil tersimpan :')} ${saved.txtFile}`);
+  console.log(`                     ${saved.pngFile}`);
   console.log(paint('yellow', '   (kode ini rahasia — jangan disebar)'));
 }
 
@@ -560,14 +664,24 @@ async function historyMenu() {
     const res = await core.paycheck(o.order_id);
     console.log(`\nOrder ${res.code}: ${statusLabel(res.status)} (status=${res.status})`);
   } else if (act === '2') {
-    await watchOrder(o.order_id, o.order_code);
+    await watchOrder(o.order_id, o.order_code, {
+      orderNumber: o.order_number, packageName: o.package_name, orderDate: o.order_date,
+    });
   } else if (act === '3') {
     const esim = await fetchEsimWithRetry(o.order_code);
     const file = saveB64Png(esim.qrCode, `esim-${Date.now()}.png`);
     console.log('\n' + ok('QR eSIM didapat:'));
     printQR(esim.activation_code, 'QR eSIM');
     console.log(`   ${paint('bold', 'QR PNG          :')} ${file}`);
+    console.log(`   ${paint('bold', 'Nomor           :')} ${o.order_number} — ${o.package_name}`);
+    showEsimDates(o.order_date);
     console.log(`   ${paint('bold', 'Activation code :')} ${esim.activation_code}`);
+    const saved = saveEsimResult({
+      orderId: o.order_id, orderNumber: o.order_number, packageName: o.package_name,
+      orderDate: o.order_date, activationCode: esim.activation_code, qrCode: esim.qrCode,
+    });
+    console.log(`   ${paint('bold', 'Hasil tersimpan :')} ${saved.txtFile}`);
+    console.log(`                     ${saved.pngFile}`);
   }
 }
 
@@ -654,4 +768,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { mainMenu, randomName, randomEmail, printQR, qrLines, brailleLines };
+module.exports = { mainMenu, randomName, randomEmail, printQR, qrLines, brailleLines, saveEsimResult, expiryDate, parseOrderDate };

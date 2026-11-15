@@ -16,9 +16,9 @@
  *       [--contains 6666] [--ends 123] [--max-attempts 50] [--json]
  *   node im3-esim.js order --package 4324 --number-id 6556262 \
  *       --name "Indira" --email "a@b.id" [--phone 08...] --confirm [--json]
- *   node im3-esim.js status --order-id 950002009361 [--json]
+ *   node im3-esim.js status --order-id 950002009xxx [--json]
  *   node im3-esim.js esim --order-code "<order_code dari create>" [--json]
- *   node im3-esim.js watch --order-id 950002009361 --order-code "<...>" [--json]
+ *   node im3-esim.js watch --order-id 950002009xxx --order-code "<...>" [--json]
  *
  * PERINGATAN: `order` membuat order QRIS NYATA (Rp1 untuk paket 5GB).
  * File out/order-*.json memuat activation_code eSIM — JANGAN disebar.

@@ -16,3 +16,8 @@ npm-debug.log*
 Thumbs.db
 .vscode/
 .idea/
+
+# Hasil eSIM (txt + PNG, berisi activation code)
+hasil/
+cli/hasil/
+esim-*.txt
