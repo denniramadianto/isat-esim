@@ -14,11 +14,11 @@
  *   node im3-esim.js numbers --package 4324 [--search 123] [--category reg] [--json]
  *   node im3-esim.js hunt --package 4324 --digits 11 --prefix 0815,0855
  *       [--contains 6666] [--ends 123] [--max-attempts 50] [--json]
- *   node im3-esim.js order --package 4324 --number-id <id nomor> \
- *       --name "Nama Pembeli" --email "a@b.id" [--phone 08...] --confirm [--json]
- *   node im3-esim.js status --order-id 950002009xxx [--json]
+ *   node im3-esim.js order --package 4324 --number-id 6556262 \
+ *       --name "Indira" --email "a@b.id" [--phone 08...] --confirm [--json]
+ *   node im3-esim.js status --order-id 950002009361 [--json]
  *   node im3-esim.js esim --order-code "<order_code dari create>" [--json]
- *   node im3-esim.js watch --order-id 950002009xxx --order-code "<...>" [--json]
+ *   node im3-esim.js watch --order-id 950002009361 --order-code "<...>" [--json]
  *
  * PERINGATAN: `order` membuat order QRIS NYATA (Rp1 untuk paket 5GB).
  * File out/order-*.json memuat activation_code eSIM — JANGAN disebar.
@@ -437,10 +437,28 @@ async function cmdStatus(args) {
   return res;
 }
 
+// Status esim/status (terverifikasi live 15 Nov 2026):
+//   1 = "In-Progress" (sudah paid, QR eSIM masih disiapkan server — coba lagi)
+//   2 = "Success" (qrCode + activation_code tersedia)
+const ESIM_MAX_TRIES = 12; // ~2 menit dengan jeda 10 detik
+const ESIM_RETRY_SECONDS = 10;
+
 async function cmdEsim(args) {
   if (!args['order-code']) throw new Error('butuh --order-code (dari create order).');
-  const res = await esimStatus(args['order-code']);
-  if (res.status !== 2 || !res.qrCode) {
+  let res = null;
+  for (let i = 1; i <= ESIM_MAX_TRIES; i++) {
+    res = await esimStatus(args['order-code']);
+    if (res.status === 2 && res.qrCode) break;
+    if (res.status === 1) {
+      if (!args.json) {
+        console.log(`   QR eSIM masih disiapkan server (In-Progress), coba lagi ${i}/${ESIM_MAX_TRIES}...`);
+      }
+      if (i < ESIM_MAX_TRIES) await sleep(ESIM_RETRY_SECONDS * 1000);
+      continue;
+    }
+    break;
+  }
+  if (!res || res.status !== 2 || !res.qrCode) {
     throw new Error(`QR eSIM belum tersedia: ${JSON.stringify(res).slice(0, 300)}`);
   }
   const file = saveB64Png(res.qrCode, `esim-${Date.now()}.png`);
@@ -549,7 +567,8 @@ function help() {
   console.log(`
 im3-esim.js — CLI order eSIM IM3 (tanpa dependensi, Node >= 18)
 
-  node im3-esim.js run                      wizard interaktif (rekomendasi)
+  node im3-esim.js                         menu interaktif (run.js) — tanpa argumen
+  node im3-esim.js run                      wizard interaktif (mode lama)
   node im3-esim.js packages [--json]        daftar 9 paket + harga
   node im3-esim.js numbers --package 4324 [--search 123] [--category reg] [--json]
   node im3-esim.js hunt --package 4324 --digits 11 --prefix 0815,0855
@@ -572,7 +591,13 @@ Catatan:
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const cmd = args._[0];
-  if (!cmd || cmd === 'help' || args.help) return help();
+  // Tanpa argumen -> buka menu interaktif (run.js). UI-nya tinggal di sana;
+  // file ini tetap jadi core engine (API + subcommand) untuk bot Telegram.
+  if (!cmd) {
+    const ui = require('./run.js');
+    return ui.mainMenu();
+  }
+  if (cmd === 'help' || args.help) return help();
   try {
     switch (cmd) {
       case 'packages': await cmdPackages(args); break;

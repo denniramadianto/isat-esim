@@ -1,16 +1,67 @@
-# CLI Order eSIM IM3 — `im3-esim.js`
+# CLI Order eSIM IM3 — `im3-esim.js` + `run.js`
 
 CLI Node.js **tanpa dependensi** (Node ≥ 18, pakai `fetch` bawaan) untuk order eSIM
 prabayar dari `im3shop.ioh.co.id`, dari pilih paket sampai QR eSIM pasca-bayar.
 Endpoint terverifikasi dari HAR 1–4 (15 Nov 2026) — lihat
 `../api-endpoints-from-har.md`.
 
+## Arsitektur (2 file, 1 core)
+
+```
+im3-esim.js   CORE ENGINE — API IM3 + subcommand. Dipakai bot Telegram.
+run.js        UI TERMINAL — menu interaktif berwarna, riwayat, nama/email random.
+telegram.js   (rencana) bot Telegram — memakai core, bukan file UI.
+```
+
+`run.js` hanya tampilan dan input; semua panggilan ke IM3 lewat
+`require('./im3-esim.js')`. Logika API tidak diduplikasi. File core
+sengaja dijaga stabil supaya bot Telegram bisa memakainya apa adanya.
+
 ## Cara pakai
 
 ```bash
 cd esim-order-on-tg/cli
-node im3-esim.js run        # wizard interaktif — ini yang paling gampang
+node im3-esim.js            # buka menu interaktif (run.js) — paling gampang
+node run.js                 # sama
+node im3-esim.js run        # wizard interaktif mode lama
 ```
+
+### Menu utama (`run.js`)
+
+```
+1. 🛒  Order eSIM Baru
+2. 🎯  Hunt Nomor Cantik
+3. 📦  Lihat Paket eSIM
+4. 🔍  Cek Status Order
+5. 📱  Ambil QR eSIM (order sudah paid)
+6. 📋  Riwayat Pesanan
+7. 💰  Riwayat Pembayaran
+0. 🚪  Keluar
+```
+
+- **Order eSIM Baru:** pilih paket → pilih nomor (manual / auto hunt) →
+  nama (ketik manual / random nama Indonesia) → email (ketik manual /
+  random dari nama tanpa spasi + `@sir.my.id`) → WhatsApp opsional →
+  konfirmasi → order QRIS → polling sampai paid → QR eSIM.
+- **Nama & email random:** nama diambil dari daftar nama Indonesia
+  (misal `Sari Laksmana` → `sarilaksmana@sir.my.id`). **Konfirmasi email
+  tidak ditanyakan** — otomatis diisi sama dengan email yang dipakai.
+- **QR tampil di terminal:** setelah order dibuat, kode **QRIS tampil
+  sebagai gambar QR di terminal** (bukan cuma string raw) — tinggal scan
+  pakai aplikasi pembayaran. Setelah paid, **QR eSIM juga tampil di
+  terminal** (dari activation code). String raw tetap ditampilkan kecil
+  di bawahnya sebagai cadangan. Render memakai teknik half-block
+  (1 karakter = 2 modul vertikal) dengan latar putih + modul hitam,
+  lebar QRIS ~69 kolom — kalau terminal lebih sempit, akan ada peringatan
+  putar HP / kecilkan font. Encoder QR: `qrcode.js` (vendored, MIT,
+  kazuhikoarase/qrcode-generator, tanpa `npm install`).
+  Terverifikasi: QR hasil render di-decode kembali (jsQR) dan isinya
+  sama persis dengan string QRIS / LPA aslinya.
+- **Riwayat Pesanan:** membaca `out/order-*.json` — daftar order yang
+  pernah dibuat dari CLI ini, lengkap dengan detail dan aksi (cek status /
+  lanjut polling / ambil QR eSIM).
+- **Riwayat Pembayaran:** mengecek status tiap order tersimpan ke server
+  (`paycheck`) — PAID / menunggu bayar / QRIS kedaluwarsa.
 
 Wizard: pilih paket → cari digit nomor → pilih nomor → isi nama/email/WA →
 konfirmasi → order QRIS dibuat → bayar → CLI polling otomatis sampai paid →
@@ -23,11 +74,11 @@ node im3-esim.js packages [--json]
 node im3-esim.js numbers --package 4324 [--search 123] [--category reg] [--json]
 node im3-esim.js hunt --package 4324 --digits 11 --prefix 0815,0855 \
   [--contains 6666] [--ends 123] [--max-attempts 50] [--delay 800] [--json]
-node im3-esim.js order --package 4324 --number-id <id nomor> \
-  --name "Nama Pembeli" --email "a@b.id" [--phone 08..] --confirm [--json]
-node im3-esim.js status --order-id 950002009xxx [--json]
+node im3-esim.js order --package 4324 --number-id 6556262 \
+  --name "Indira" --email "a@b.id" [--phone 08..] --confirm [--json]
+node im3-esim.js status --order-id 950002009361 [--json]
 node im3-esim.js esim --order-code "<order_code>" [--json]
-node im3-esim.js watch --order-id 950002009xxx --order-code "<order_code>" [--json]
+node im3-esim.js watch --order-id 950002009361 --order-code "<order_code>" [--json]
 ```
 
 Flag `--json` mencetak JSON murni — untuk dipakai bot Telegram
@@ -99,9 +150,19 @@ Karena itu CLI ini dibuat defensif:
 
 - `packages` → 9 paket tampil, harga benar (5GB Rp1 s.d. 150GB Rp200.000).
 - `numbers --search 1666` → 8 nomor Regular, id benar.
-- `status --order-id 950002009xxx` → PAID (status=3), sesuai HAR ke-4.
+- `status --order-id 950002009361` → PAID (status=3), sesuai HAR ke-4.
 - `esim --order-code ...` → QR eSIM PNG 250×250 + activation code, sama dengan HAR ke-4.
 - `order` tanpa `--confirm` → ditolak, tidak ada order dibuat.
+- Uji end-to-end dari nol di Termux (15 Nov 2026, 15:38–15:42 WIB):
+  order `950002009xxx`, nomor `0858••••3330`, 5GB Rp1, email `<nama>@sir.my.id`
+  → polling `paycheck` status 2 → PAID (status 3) → ambil QR eSIM.
+  **Temuan baru:** sesaat setelah paid, `esim/status` mengembalikan
+  `{"status":1,"qrCode":"","msg":"In-Progress"}` — QR eSIM belum siap.
+  Dicoba lagi ~40 detik kemudian → `status: 2` + QR + activation code.
+  Karena itu `esim` dan `watch` sekarang retry otomatis (maks 12x, jeda
+  10 detik) saat status 1, dan hanya gagal kalau QR tetap tidak siap.
+- `run.js`: menu tampil + daftar paket tampil benar; `node im3-esim.js`
+  tanpa argumen membuka menu; nama random → email `@sir.my.id` teruji.
 - `hunt --digits 11 --prefix 0815` → ketemu `08155275225` (Premium) setelah
   2 percobaan / 64 nomor, dalam ~3 detik.
 - `hunt --contains 1234` → 8 nomor ketemu dalam 1 percobaan.
