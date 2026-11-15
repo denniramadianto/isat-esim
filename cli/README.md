@@ -34,33 +34,46 @@ node im3-esim.js run        # wizard interaktif mode lama
 ### Menu utama (`run.js`)
 
 ```
-1. 🛒  Order eSIM Baru
-2. 🎯  Hunt Nomor Cantik
-3. 📦  Lihat Paket eSIM
-4. 🔍  Cek Status Order
-5. 📱  Ambil QR eSIM (order sudah paid)
-6. 📋  Riwayat Pesanan
-7. 💰  Riwayat Pembayaran
+1. ⚡  Quick Order (otomatis, bisa banyak)
+2. 🛒  Order eSIM Baru
+3. 🎯  Hunt Nomor Cantik
+4. 📦  Lihat Paket eSIM
+5. 🔍  Cek Status Order
+6. 📱  Ambil QR eSIM (order sudah paid)
+7. 📋  Riwayat Pesanan
+8. 💰  Riwayat Pembayaran
 0. 🚪  Keluar
 ```
 
-- **Order eSIM Baru:** pilih paket → pilih nomor (manual / auto hunt) →
+- **Order eSIM Baru (menu 2):** pilih paket → pilih nomor (manual / auto hunt) →
   **konfirmasi nomor terpilih** (Enter = pakai, ketik `lagi` = cari nomor
   lain) → nama (ketik manual / random nama Indonesia) → email (ketik
   manual / random dari nama tanpa spasi + `@sir.my.id`) → WhatsApp
   opsional → konfirmasi → order QRIS → polling sampai paid → QR eSIM.
   Nomor hasil hunt tidak langsung di-order tanpa ditanya dulu.
-- **Hunt Nomor Cantik (menu 2):** setelah ketemu nomor, ada pilihan
+- **Hunt Nomor Cantik (menu 3):** setelah ketemu nomor, ada pilihan
   `[1] order dengan nomor ini, [2] hunt lagi, [0] kembali ke menu` —
   nomor hasil hunt tidak hilang begitu saja.
 - **Folder `hasil/`:** setiap QR eSIM yang didapat (lewat order, polling,
-  menu 5, atau riwayat) otomatis tersimpan di `hasil/` dengan **nama file
+  menu 6, atau riwayat) otomatis tersimpan di `hasil/` dengan **nama file
   sama** untuk txt dan PNG-nya: `hasil/esim-<order_id>.txt` +
   `hasil/esim-<order_id>.png`. Isi txt: nomor, paket, Order ID, tanggal
   order, **berlaku sampai (+45 hari dari order)**, dan activation code.
   Folder ini berisi data sensitif — sudah masuk `.gitignore`, jangan
   di-commit.
-- **Ambil QR eSIM (menu 5):** tidak perlu ketik order code lagi — tampil
+- **Quick Order (menu 1):** sekali jalan, N eSIM sekaligus, semuanya
+  otomatis — nomor acak (dicek ketersediaannya), nama + email random,
+  paket default Perdana eSIM 5GB Rp1. Masukkan jumlah (1–10), lalu
+  order NYATA langsung dibuat satu per satu (jeda ~6,5 dtk antar
+  order, mengikuti batas server ~1 order / 6 dtk); QRIS tiap order
+  langsung tampil di terminal + tersimpan sebagai `out/qris-<id>.png`.
+  Setelah semua order dibuat, semuanya dipolling bareng tiap 20 dtk
+  sampai masing-masing paid / QRIS kedaluwarsa (maks ~10 menit): yang
+  paid langsung diambil QR eSIM-nya + tersimpan di `hasil/`, yang
+  kedaluwarsa ditutup. Di akhir tampil ringkasan per order.
+  **Perhatian: mengetik jumlah di menu ini = konfirmasi membuat order
+  nyata — tidak ada konfirmasi kedua.**
+- **Ambil QR eSIM (menu 6):** tidak perlu ketik order code lagi — tampil
   daftar nomor dari riwayat pesanan, pilih nomornya, lalu tampil QR eSIM
   + data eSIM (nomor, paket, tanggal order, berlaku sampai +45 hari,
   activation code) + file `hasil/` tersimpan. Kalau order belum ada di

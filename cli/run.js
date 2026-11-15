@@ -549,6 +549,147 @@ async function inputNameEmail() {
   return { name, email, phone };
 }
 
+// ---------------------------------------------------------------- Quick Order
+const QUICK_MAX = 10; // maks eSIM sekali jalan (jaga-jaga: jangan spam create order)
+const CREATE_DELAY_MS = 6500; // jeda antar create order (batas server: ~1 order / 6 dtk)
+
+// Ambil satu nomor acak yang tersedia: 1 batch per kategori, acak urutan,
+// cek satu-satu sampai ketemu yang available (maks 8 cek per batch).
+async function pickRandomNumber(pkg) {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const all = [];
+    for (const c of ['reg', 'platinum', 'gold', 'silver']) {
+      all.push(...await core.listNumbers(pkg.id, c, ''));
+    }
+    for (let i = all.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [all[i], all[j]] = [all[j], all[i]];
+    }
+    for (const cand of all.slice(0, 8)) {
+      try {
+        const r = await core.checkNumber(cand.id);
+        if (r && r.available !== false) return cand;
+      } catch { /* lanjut ke kandidat berikut */ }
+    }
+  }
+  return null;
+}
+
+// Polling SEMUA order quick order secara paralel (per ronde): tiap order
+// dicek statusnya; yang sudah PAID langsung diambil QR eSIM-nya, yang
+// kedaluwarsa (status 21 / lewat 10 menit) ditutup. Berhenti bila semua
+// order sudah beres atau batas 10 menit lewat.
+async function watchQuickOrders(orders) {
+  section('Cek Pembayaran');
+  console.log(paint('gray', `Mengecek ${orders.length} order tiap ${POLL_SECONDS} detik sampai semuanya paid / QRIS kedaluwarsa (maks ~10 menit).`));
+  const state = orders.map((o) => ({ ...o, status: 2, done: false }));
+  const deadline = Date.now() + 10 * 60 * 1000;
+  for (;;) {
+    for (const o of state) {
+      if (o.done) continue;
+      try {
+        const res = await core.paycheck(o.order_id);
+        o.status = res.status;
+      } catch { /* gagal cek — tetap pending, coba lagi ronde berikut */ }
+      const now = new Date().toLocaleTimeString('id-ID');
+      if (o.status === 3) {
+        console.log(paint('green', `\n[${now}] PAID — ${o.order_number} (Order ${o.order_id}). Mengambil QR eSIM...`));
+        try {
+          const esim = await fetchEsimWithRetry(o.order_code);
+          const file = saveB64Png(esim.qrCode, `esim-${Date.now()}.png`);
+          console.log(ok(`QR eSIM didapat: ${o.order_number}`));
+          printQR(esim.activation_code, `QR eSIM — ${o.order_number}`);
+          console.log(`   ${paint('bold', 'QR PNG          :')} ${file}`);
+          showEsimDates(o.order_date);
+          console.log(`   ${paint('bold', 'Activation code :')} ${esim.activation_code}`);
+          const saved = saveEsimResult({
+            orderId: o.order_id, orderNumber: o.order_number, packageName: o.package_name,
+            orderDate: o.order_date, activationCode: esim.activation_code, qrCode: esim.qrCode,
+          });
+          console.log(`   ${paint('bold', 'Hasil tersimpan :')} ${saved.txtFile}`);
+          markOrderPaid(o.order_id);
+        } catch (e) {
+          console.log(err(`QR eSIM ${o.order_number} gagal diambil: ${(e.message || e).split('\n')[0]} — ambil lagi lewat menu "Ambil QR eSIM".`));
+        }
+        o.done = true;
+      } else if (o.status === 21 || isExpiredUnpaid(o, o.status)) {
+        console.log(paint('red', `\n[${now}] QRIS kedaluwarsa — ${o.order_number} (Order ${o.order_id}).`));
+        o.done = true;
+      }
+      await sleep(300);
+    }
+    if (state.every((o) => o.done)) break;
+    if (Date.now() > deadline) {
+      for (const o of state.filter((x) => !x.done)) {
+        console.log(warn(`Waktu habis — ${o.order_number} (Order ${o.order_id}) belum terbayar.`));
+      }
+      break;
+    }
+    const now = new Date().toLocaleTimeString('id-ID');
+    console.log(paint('gray', `[${now}] masih menunggu: ${state.filter((o) => !o.done).map((o) => o.order_number).join(', ')}`));
+    await sleep(POLL_SECONDS * 1000);
+  }
+  section('Ringkasan Quick Order');
+  for (const o of state) {
+    const st = o.status === 3 ? paint('green', 'PAID ✅') : paint('red', 'tidak terbayar / kedaluwarsa');
+    console.log(`  ${paint('bold', o.order_number)} — ${o.package_name} | Order ${o.order_id} → ${st}`);
+  }
+}
+
+// Menu 1 — Quick Order: sekali jalan, N eSIM sekaligus, semuanya otomatis
+// (nomor acak, nama + email random). QRIS tiap order langsung tampil di
+// terminal, lalu semua order dipolling bareng sampai paid / kedaluwarsa.
+// Perhatian: mengetik jumlah di sini = konfirmasi membuat order NYATA
+// (Rp1 per eSIM paket default) — tidak ada konfirmasi kedua, sesuai
+// permintaan "sekali klik langsung otomatis semua".
+async function quickOrder() {
+  section('⚡ Quick Order');
+  const pkgs = await core.listPackages();
+  const pkg = pkgs.find((p) => p.id === 4324) || pkgs[0]; // default: Perdana eSIM 5GB Rp1
+  const nRaw = await ask(`Berapa eSIM yang mau dibuat sekaligus? [1-${QUICK_MAX}, Enter = 1]: `);
+  const n = Math.min(Math.max(Number(nRaw || 1) || 1, 1), QUICK_MAX);
+  console.log(`\n${paint('bold', 'Rencana:')} ${n}x ${paint('bold', pkg.name)} — ${paint('green', rupiah(pkg.price))} (total ${paint('green', rupiah(pkg.price * n))})`);
+  console.log(paint('gray', 'Nomor, nama, dan email dipilih otomatis (random). QRIS tiap order tampil langsung di sini, lalu dicek pembayarannya bareng-bareng.'));
+  console.log(paint('yellow', 'Order NYATA langsung dibuat — tidak ada konfirmasi kedua.'));
+  // ---- fase 1: buat semua order ----
+  const orders = [];
+  for (let i = 0; i < n; i++) {
+    if (i > 0) {
+      console.log(paint('gray', `\nJeda ${CREATE_DELAY_MS / 1000} dtk sebelum order berikut (batas server: ~1 order / 6 dtk)...`));
+      await sleep(CREATE_DELAY_MS);
+    }
+    console.log(paint('cyan', `\n── Order ${i + 1}/${n} ──`));
+    const chosen = await pickRandomNumber(pkg);
+    if (!chosen) { console.log(err(`Order ${i + 1}: tidak dapat nomor — lewati.`)); continue; }
+    const name = randomName();
+    const email = randomEmail(name);
+    console.log(`Nomor: ${paint('bold', chosen.number)} [${chosen.label}] | Nama: ${name} | Email: ${email}`);
+    const created = await core.createOrder({
+      numberId: chosen.id, name, phone: '', email, packageId: pkg.id,
+    });
+    const detail = await core.orderDetail(decodeURIComponent(created.order_code));
+    const result = {
+      order_id: detail.order_code,
+      order_number: detail.order_number,
+      package_name: detail.package_name,
+      total_price: detail.total_price,
+      order_code: decodeURIComponent(created.order_code),
+      order_date: created.order_date,
+      expire_minutes: created.expire,
+      qris_raw: created.link,
+    };
+    result.qris_png = saveB64Png(created.qr_link, `qris-${result.order_id}.png`);
+    saveJson(result, `order-${result.order_id}.json`);
+    console.log(ok(`Order ${i + 1} dibuat: ${result.order_number} — Order ${result.order_id} — ${rupiah(result.total_price)}`));
+    const qrShown = printQR(result.qris_raw, `QRIS ${i + 1}/${n} — ${result.order_number} (berlaku ${result.expire_minutes} menit)`);
+    if (!qrShown) console.log(paint('bold', `   Scan file PNG-nya: ${result.qris_png}`));
+    orders.push(result);
+  }
+  if (!orders.length) { console.log(err('Tidak ada order yang berhasil dibuat.')); return; }
+  // ---- fase 2: cek pembayaran semua order bareng-bareng ----
+  await watchQuickOrders(orders);
+}
+
 async function orderFlow(preselected) {
   let pkg, chosen;
   if (preselected) {
@@ -777,23 +918,25 @@ async function mainMenu() {
   for (;;) {
     console.log(`
 ${paint('bold', 'MENU UTAMA')}
-  ${paint('cyan', '1.')} 🛒  Order eSIM Baru
-  ${paint('cyan', '2.')} 🎯  Hunt Nomor Cantik
-  ${paint('cyan', '3.')} 📦  Lihat Paket eSIM
-  ${paint('cyan', '4.')} 🔍  Cek Status Order
-  ${paint('cyan', '5.')} 📱  Ambil QR eSIM (order sudah paid)
-  ${paint('cyan', '6.')} 📋  Riwayat Pesanan
-  ${paint('cyan', '7.')} 💰  Riwayat Pembayaran
+  ${paint('cyan', '1.')} ⚡  Quick Order (otomatis, bisa banyak)
+  ${paint('cyan', '2.')} 🛒  Order eSIM Baru
+  ${paint('cyan', '3.')} 🎯  Hunt Nomor Cantik
+  ${paint('cyan', '4.')} 📦  Lihat Paket eSIM
+  ${paint('cyan', '5.')} 🔍  Cek Status Order
+  ${paint('cyan', '6.')} 📱  Ambil QR eSIM (order sudah paid)
+  ${paint('cyan', '7.')} 📋  Riwayat Pesanan
+  ${paint('cyan', '8.')} 💰  Riwayat Pembayaran
   ${paint('cyan', '0.')} 🚪  Keluar
 `);
-    const choice = await askChoice(paint('bold', 'Pilih [0-7]: '), ['0', '1', '2', '3', '4', '5', '6', '7']);
+    const choice = await askChoice(paint('bold', 'Pilih [0-8]: '), ['0', '1', '2', '3', '4', '5', '6', '7', '8']);
     try {
       if (choice === '0') {
         console.log(paint('green', '\nSampai jumpa! 👋'));
         break;
       }
-      if (choice === '1') await orderFlow();
-      else if (choice === '2') {
+      if (choice === '1') await quickOrder();
+      else if (choice === '2') await orderFlow();
+      else if (choice === '3') {
         const pkg = await pickPackage();
         for (;;) {
           const hit = await huntFlow(pkg);
@@ -805,11 +948,11 @@ ${paint('bold', 'MENU UTAMA')}
           // '2' -> hunt lagi dengan kriteria baru
         }
       }
-      else if (choice === '3') await packagesMenu();
-      else if (choice === '4') await statusMenu();
-      else if (choice === '5') await esimMenu();
-      else if (choice === '6') await historyMenu();
-      else if (choice === '7') await paymentHistoryMenu();
+      else if (choice === '4') await packagesMenu();
+      else if (choice === '5') await statusMenu();
+      else if (choice === '6') await esimMenu();
+      else if (choice === '7') await historyMenu();
+      else if (choice === '8') await paymentHistoryMenu();
     } catch (e) {
       console.log('\n' + err(e && e.message ? e.message.split('\n')[0] : String(e)));
     }
