@@ -282,6 +282,64 @@ Semua tersimpan di `cli/out/`:
 | `order-<order>.json` | Ringkasan order + string QRIS mentah (`qris_raw`) |
 | `esim-*.png` | QR eSIM (setelah paid) |
 
+## Bot toko (jualan publik) — `shop.js`
+
+Bot Telegram terpisah dari `telegram.js` (bot pribadi). Bot toko bisa
+diakses semua orang: pembeli order eSIM, bayar QRIS IM3, lalu menebus
+QR eSIM pakai coin. Admin mengelola pembeli, saldo coin, dan backup
+QR eSIM.
+
+**Model:** 1 coin = 1 QR eSIM siap pakai. Harga coin default **Rp400**
+(bisa diubah admin). Pembeli bayar QRIS IM3 (harga paket) + 1 coin
+saat menebus. Alur: order → QRIS dibayar → QR eSIM ditahan → tebus
+1 coin → QR + kode aktivasi dikirim. Coin kurang → eSIM masuk
+riwayat "sudah bayar, belum ditebus", bisa ditebus nanti setelah top up.
+
+**Top up:** bayar MANUAL (transfer / QRIS statis penjual, teksnya diisi
+admin di menu admin) → pembeli tekan "Saya Sudah Bayar" → admin
+approve → coin masuk. QRIS IM3 tidak bisa dipakai untuk top up
+(uangnya masuk ke IM3, bukan ke penjual). Top up pending kedaluwarsa
+24 jam bila tidak ada konfirmasi.
+
+**Jalankan:**
+
+```bash
+TELEGRAM_BOT_TOKEN=<token bot toko> \
+TELEGRAM_ADMIN_IDS=<user ID Telegram kamu> \
+[TELEGRAM_ADMIN_USERNAME=<username kamu tanpa @>] \
+node shop.js
+```
+
+Bot toko harus bot BARU di @BotFather (pisah dari bot pribadi).
+User ID Telegram dicek lewat @userinfobot.
+
+**Menu pembeli** (`/start`): ⚡ Quick Order (bulk 1–10 eSIM, QRIS
+langsung, nomor/nama/email otomatis, paket default 5GB Rp1), 🛒 Manual
+Order (pilih paket, cari nomor manual/hunt, nama/email sendiri),
+📋 Riwayat (diterima / sudah bayar belum ditebus + tombol Tebus /
+batal-kedaluwarsa), 🪙 Top Up Coin, ❓ Bantuan (tombol chat admin).
+
+**Menu admin** (`/admin`, khusus `TELEGRAM_ADMIN_IDS`): 👥 Pembeli
+(daftar, detail, tambah/kurang coin, ban/unban, lihat order), 🪙 Coin
+& Top Up (harga coin, approve/tolak top up), 📦 QR eSIM (semua QR +
+pemiliknya, kirim ulang), 📊 Statistik (omzet top up, eSIM terkirim,
+coin beredar), 💳 Info Bayar Top Up, 📣 Broadcast ke semua pembeli.
+
+**Batas anti-spam:** maks 10 order aktif per pembeli, maks 10 eSIM
+per Quick Order. Polling pembayaran jalan di background (tiap 20 detik)
+jadi bot tetap responsif walau banyak order dipantau.
+
+**Data toko** (lokal, di-`.gitignore`, JANGAN di-commit):
+`cli/db/shop.json` (user, order, topup, config) dan
+`cli/db/esim-qr/<order_id>.png` (backup QR eSIM). File ini memuat
+kode aktivasi eSIM pembeli — hanya admin yang boleh melihatnya.
+
+**Yang diuji (harness stub, 15 Nov 2026):** 28 skenario lolos —
+quick order 2 eSIM → paid → ditahan (coin 0) → top up 5 coin →
+approve admin → tebus 1 coin → QR terkirim; daftar QR + pemilik di
+menu admin; ubah harga coin; order kedaluwarsa; pembeli ditolak
+buka /admin.
+
 ## Yang perlu diingat
 
 - **Create order = order QRIS nyata.** Tanpa `--confirm` (atau "ya" di wizard),
