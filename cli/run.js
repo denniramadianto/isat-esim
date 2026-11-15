@@ -322,7 +322,42 @@ function readHistory() {
 function statusLabel(s) {
   if (s === 3) return paint('green', 'PAID');
   if (s === 2) return paint('yellow', 'Menunggu bayar');
+  if (s === 21) return paint('red', 'QRIS kedaluwarsa');
   return paint('gray', `status=${s}`);
+}
+// Status bayar sebuah order tersimpan: pakai yang tersimpan di JSON bila
+// ada (ditulis watchOrder saat PAID), kalau tidak cek langsung ke server.
+async function resolveOrderStatus(o) {
+  if (o.payment_status === 3) return 3;
+  try {
+    const res = await core.paycheck(o.order_id);
+    return res.status;
+  } catch {
+    return o.payment_status || 0;
+  }
+}
+// QRIS berlaku 10 menit dari tanggal order — lewat dari itu, order yang
+// belum dibayar sudah kedaluwarsa dan tidak akan pernah punya QR eSIM.
+// Server sendiri mengembalikan status 21 untuk order yang kedaluwarsa
+// (teramati di Riwayat Pembayaran, 15 Nov 2026).
+function isExpiredUnpaid(o, status) {
+  if (status === 3) return false;
+  if (status === 21) return true;
+  const made = parseOrderDate(o.order_date);
+  if (!made) return false;
+  return Date.now() > made.getTime() + 10 * 60 * 1000;
+}
+// Catat status PAID ke file order-*.json supaya menu lain tidak perlu
+// cek server terus untuk order yang sama.
+function markOrderPaid(orderId) {
+  try {
+    const jf = path.join(OUT_DIR, `order-${orderId}.json`);
+    if (!fs.existsSync(jf)) return;
+    const j = JSON.parse(fs.readFileSync(jf, 'utf8'));
+    j.payment_status = 3;
+    j.paid_at = new Date().toISOString();
+    fs.writeFileSync(jf, JSON.stringify(j, null, 2) + '\n');
+  } catch { /* abaikan — status tetap bisa dicek live */ }
 }
 async function fetchEsimWithRetry(orderCode) {
   // esim/status: 1 = In-Progress (sudah paid, QR masih disiapkan),
@@ -363,6 +398,7 @@ async function watchOrder(orderId, orderCode, meta = {}) {
       console.log(`   ${paint('bold', 'Hasil tersimpan :')} ${saved.txtFile}`);
       console.log(`                     ${saved.pngFile}`);
       console.log(paint('yellow', '   (kode ini rahasia — jangan disebar)'));
+      markOrderPaid(orderId);
       return { paid: true, qr_png: file, activation_code: esim.activation_code, ...saved };
     }
     console.log(`[${now}] status=${res.status} (menunggu bayar)...`);
@@ -598,12 +634,36 @@ async function esimMenu() {
   let orderCode = '';
   let meta = {};
   if (orders.length) {
-    orders.forEach((o, i) => {
-      console.log(`  ${paint('cyan', String(i + 1) + '.')} ${paint('bold', o.order_number)} — ${o.package_name} | Order ${o.order_id} | ${o.order_date || ''}`);
-    });
+    // Hanya order yang SUDAH DIBAYAR yang bisa diambil QR eSIM-nya.
+    // Order yang belum dibayar / QRIS-nya kedaluwarsa tidak punya QR eSIM,
+    // jadi ditampilkan terpisah dan tidak bisa dipilih.
+    console.log(paint('gray', 'Mengecek status bayar tiap order...'));
+    const paid = [];
+    const unpaid = [];
+    for (const o of orders) {
+      const st = await resolveOrderStatus(o);
+      (st === 3 ? paid : unpaid).push({ ...o, _status: st });
+      await sleep(300);
+    }
+    if (paid.length) {
+      console.log(paint('bold', '\nSudah dibayar — bisa diambil QR eSIM-nya:'));
+      paid.forEach((o, i) => {
+        console.log(`  ${paint('cyan', String(i + 1) + '.')} ${paint('bold', o.order_number)} — ${o.package_name} | Order ${o.order_id} | ${o.order_date || ''}`);
+      });
+    } else {
+      console.log(warn('Belum ada order yang sudah dibayar.'));
+    }
+    if (unpaid.length) {
+      console.log(paint('gray', '\nBelum bisa diambil QR-nya (tidak bisa dipilih):'));
+      unpaid.forEach((o) => {
+        const note = isExpiredUnpaid(o, o._status) ? 'QRIS kedaluwarsa' : 'menunggu bayar';
+        console.log(paint('gray', `  • ${o.order_number} — ${o.package_name} | Order ${o.order_id} | ${o.order_date || ''} (${note})`));
+      });
+    }
+    if (!paid.length) return;
     const sel = await ask('\nPilih nomor [1-..], atau ketik order code langsung, [Enter] kembali: ');
     if (!sel) return;
-    const picked = orders[Number(sel) - 1];
+    const picked = paid[Number(sel) - 1];
     if (picked) {
       orderCode = picked.order_code;
       meta = { orderId: picked.order_id, orderNumber: picked.order_number, packageName: picked.package_name, orderDate: picked.order_date };

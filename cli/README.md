@@ -65,6 +65,16 @@ node im3-esim.js run        # wizard interaktif mode lama
   + data eSIM (nomor, paket, tanggal order, berlaku sampai +45 hari,
   activation code) + file `hasil/` tersimpan. Kalau order belum ada di
   riwayat, tetap bisa ketik order code manual.
+  **Hanya order yang sudah dibayar (PAID) yang tampil sebagai pilihan.**
+  Order yang belum dibayar / QRIS-nya kedaluwarsa ditampilkan terpisah
+  dengan keterangan (`menunggu bayar` / `QRIS kedaluwarsa`) dan tidak
+  bisa dipilih — order seperti itu memang tidak punya QR eSIM.
+  Status bayar dicek ke server per order (`paycheck`); begitu order
+  terkonfirmasi PAID, statusnya dicatat di `out/order-<id>.json`
+  (`payment_status: 3`) supaya tidak dicek ulang terus.
+- **Kode status `paycheck`:** `2` = menunggu bayar, `3` = PAID,
+  `21` = QRIS kedaluwarsa (order tidak dibayar dalam 10 menit).
+  Untuk `esim/status` beda arti: `1` = In-Progress, `2` = Success.
 - **Enter = ya:** di prompt "Sudah bayar? Lanjut polling... (ya/tidak)",
   tekan Enter saja sudah dihitung `ya`.
 - **Nama & email random:** nama diambil dari daftar nama Indonesia
