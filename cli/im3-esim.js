@@ -20,7 +20,7 @@
  *   node im3-esim.js esim --order-code "<order_code dari create>" [--json]
  *   node im3-esim.js watch --order-id 950002009xxx --order-code "<...>" [--json]
  *   node im3-esim.js harvest [--package 4324] [--rounds 1] [--delay 500]
- *       [--loop] [--interval-sec 300] [--json]
+ *       [--loop] [--interval-sec 0] [--no-combo] [--random-terms 10] [--json]
  *   node im3-esim.js db [--digits 10,11] [--pattern triple|quartet]
  *       [--search 111] [--limit 50] [--check] [--json]
  *
@@ -266,8 +266,28 @@ const DB_DIR = path.join(__dirname, 'db');
 const DB_FILE = path.join(DB_DIR, 'nomorcantik.json');
 // Kata kunci sapuan: pencarian server itu substring, jadi cari "111"
 // mengembalikan semua nomor yang mengandung 111 (termasuk 1111).
-// 10 kata kunci x 4 kategori = 40 panggilan per putaran.
+// 10 kata kunci triple x 4 kategori = 40 panggilan per putaran.
+// Kata kunci KOMBO (pasangan/deretan, misal 1166, 1122, 1234, 113):
+// satu pencarian hanya mengembalikan segelintir nomor (ada batas hasil),
+// jadi kata kunci yang beda = sampel nomor yang beda. Nomor cantik yang
+// lolos satu kata kunci belum tentu muncul di kata kunci lain — makanya
+// sapuan memakai banyak kombinasi, bukan cuma triple.
 const HARVEST_TERMS = ['000', '111', '222', '333', '444', '555', '666', '777', '888', '999'];
+const COMBO_TERMS = [
+  '1122', '2211', '1221', '2112', '1212', '1234', '4321', '1123', '1233',
+  '1333', '1133', '1166', '6611', '1155', '5511', '1001', '2002', '1112',
+  '2111', '1222', '2221', '113', '133', '122', '155', '166', '177', '188',
+  '199', '110', '220', '330', '115', '117', '118', '119',
+];
+function randomTerms(n, exclude) {
+  const out = new Set();
+  let guard = 0;
+  while (out.size < n && guard++ < n * 20) {
+    const t = String(Math.floor(Math.random() * 1000)).padStart(3, '0');
+    if (!exclude.has(t)) out.add(t);
+  }
+  return [...out];
+}
 
 function detectRuns(number) {
   const runs = [];
@@ -327,10 +347,12 @@ function summarizeDb(db) {
 // Satu putaran = sapu semua kata kunci x semua kategori. Nomor yang
 // lolos klasifikasi dan belum ada di database dicek ketersediaannya
 // (1 panggilan per nomor baru) lalu disimpan. Nomor yang sudah ada
-// hanya diperbarui last_seen-nya. Mode loop: putaran berulang tiap
-// intervalSec sampai proses dimatikan (Ctrl+C) — untuk dijalankan
-// terus-menerus di Termux/PC/server.
-async function harvestNumbers({ packageId = 4324, categories, terms = HARVEST_TERMS, rounds = 1, delayMs = 500, loop = false, intervalSec = 300, onProgress }) {
+// hanya diperbarui last_seen-nya. Mode loop: putaran berulang sampai
+// proses dimatikan (Ctrl+C) — jeda antar putaran = intervalSec detik
+// (0 = langsung gas tanpa jeda). Tiap putaran memakai kata kunci yang
+// sama (triple + kombo) DITAMBAH kata kunci acak baru, supaya sampel
+// nomor yang muncul terus berganti sampai ketemu yang 10/11 digit.
+async function harvestNumbers({ packageId = 4324, categories, terms = HARVEST_TERMS, combo = true, randomTermsCount = 10, rounds = 1, delayMs = 500, loop = false, intervalSec = 0, onProgress }) {
   const cats = categories || CATEGORIES.map((c) => c.key);
   const db = loadDb();
   const byNumber = new Map(db.numbers.map((e) => [e.number, e]));
@@ -342,7 +364,12 @@ async function harvestNumbers({ packageId = 4324, categories, terms = HARVEST_TE
   let round = 0;
   for (;;) {
     round++;
-    for (const term of terms) {
+    const roundTerms = [
+      ...terms,
+      ...(combo ? COMBO_TERMS : []),
+      ...randomTerms(randomTermsCount, new Set([...terms, ...(combo ? COMBO_TERMS : [])])),
+    ];
+    for (const term of roundTerms) {
       let lists;
       try {
         lists = await Promise.all(cats.map((c) => listNumbers(packageId, c, term)));
@@ -534,16 +561,22 @@ async function cmdHarvest(args) {
   const rounds = Number(args.rounds || 1);
   const delayMs = Number(args.delay || 500);
   const loop = !!args.loop;
-  const intervalSec = Number(args['interval-sec'] || 300);
+  const intervalSec = Number(args['interval-sec'] ?? 0);
+  const combo = !args['no-combo'];
+  const randomTermsCount = Number(args['random-terms'] ?? 10);
+  const termsPerRound = HARVEST_TERMS.length + (combo ? COMBO_TERMS.length : 0) + randomTermsCount;
   if (!args.json) {
     console.log(`\n💎 Harvest nomor cantik (paket ${packageId})`);
     console.log('   Kriteria: 10/11 digit triple (xxx) / quartet (xxxx); 12 digit minimal quartet');
-    console.log(`   Sapuan: ${HARVEST_TERMS.join(' ')} x 4 kategori = ${HARVEST_TERMS.length * 4} panggilan/putaran`);
-    if (loop) console.log(`   Mode LOOP — putaran berulang tiap ${intervalSec} dtk sampai Ctrl+C.`);
-    else console.log(`   Putaran: ${rounds} | jeda antar kata kunci: ${delayMs}ms`);
+    console.log(`   Sapuan/putaran: ${termsPerRound} kata kunci (triple ${HARVEST_TERMS.length} + kombo ${combo ? COMBO_TERMS.length : 0} + acak ${randomTermsCount}) x 4 kategori = ${termsPerRound * 4} panggilan`);
+    if (loop) {
+      console.log(intervalSec > 0
+        ? `   Mode LOOP — putaran berulang tiap ${intervalSec} dtk sampai Ctrl+C.`
+        : '   Mode LOOP — langsung gas tanpa jeda antar putaran, sampai Ctrl+C.');
+    } else console.log(`   Putaran: ${rounds} | jeda antar kata kunci: ${delayMs}ms`);
   }
   const res = await harvestNumbers({
-    packageId, rounds, delayMs, loop, intervalSec,
+    packageId, rounds, delayMs, loop, intervalSec, combo, randomTermsCount,
     onProgress: args.json ? undefined : (p) => {
       if (p.roundDone) {
         process.stdout.write(`\n   putaran ${p.round} selesai — baru: ${p.newFound} nomor, total dicek: ${p.checked}`);
@@ -800,7 +833,8 @@ im3-esim.js — CLI order eSIM IM3 (tanpa dependensi, Node >= 18)
   node im3-esim.js esim --order-code "<order_code>" [--json]
   node im3-esim.js watch --order-id <id> --order-code "<order_code>" [--json]
   node im3-esim.js harvest [--package 4324] [--rounds 1] [--delay 500]
-                       [--loop] [--interval-sec 300] [--json]
+                       [--loop] [--interval-sec 0] [--no-combo]
+                       [--random-terms 10] [--json]
   node im3-esim.js db [--digits 10,11] [--pattern triple|quartet]
                        [--search 111] [--limit 50] [--check] [--json]
 
@@ -845,4 +879,4 @@ async function main() {
 
 if (require.main === module) main();
 
-module.exports = { listPackages, listNumbers, checkNumber, createOrder, orderDetail, paycheck, esimStatus, huntNumbers, matchNumber, classifyNumber, detectRuns, harvestNumbers, loadDb, saveDb, queryDb, summarizeDb, DB_FILE };
+module.exports = { listPackages, listNumbers, checkNumber, createOrder, orderDetail, paycheck, esimStatus, huntNumbers, matchNumber, classifyNumber, detectRuns, harvestNumbers, loadDb, saveDb, queryDb, summarizeDb, DB_FILE, HARVEST_TERMS, COMBO_TERMS };

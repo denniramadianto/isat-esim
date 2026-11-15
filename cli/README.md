@@ -94,6 +94,13 @@ node im3-esim.js run        # wizard interaktif mode lama
   order** — ke `db/nomorcantik.json` (file lokal, di-gitignore).
   Kriteria: **10/11 digit cukup triple (`xxx`) atau quartet
   (`xxxx`); 12 digit minimal quartet** (triple saja tidak cukup).
+  Sapuan tiap putaran memakai **56 kata kunci**: 10 triple
+  (`000, 111, ..., 999`) + 36 kombo (`1166, 1122, 1234, 113, ...`)
+  + 10 kata kunci acak baru tiap putaran — karena satu pencarian
+  hanya mengembalikan segelintir nomor, kata kunci yang beda =
+  sampel nomor yang beda. Loop tanpa jeda secara default
+  (`--interval-sec 0` = langsung gas); isi detik kalau mau jeda
+  antar putaran, misal `--interval-sec 60`.
   Sekali jalan:
   `node im3-esim.js harvest [--rounds 1] [--delay 500]`, atau jalan
   terus: `node im3-esim.js harvest --loop [--interval-sec 300]`
@@ -110,10 +117,14 @@ node im3-esim.js run        # wizard interaktif mode lama
   nomor dicek) menghasilkan **0 nomor** — pool saat ini didominasi
   nomor 12 digit. Setelah kriteria diperluas (12 digit minimal
   quartet), 3 putaran langsung menemukan **5 nomor quartet 12 digit**
-  (semuanya `4444`). Nomor 10/11 digit bertriple tetap sangat jarang
-  — database terisi terutama dari quartet 12 digit, dan makin
-  banyak kalau `--loop` jalan terus saat pool berputar. Pool tiap
-  paket bisa berbeda; default paket 4324 (5GB Rp1).
+  (semuanya `4444`). Setelah metode kombo ditambah (56 kata kunci/
+  putaran), 3 putaran berikutnya **tidak menemukan nomor baru sama
+  sekali** — pool sedang statis (nomor yang sama muncul terus).
+  Nomor 10/11 digit bertriple tetap belum muncul; database terisi
+  terutama dari quartet 12 digit, dan nomor 10/11 digit baru bisa
+  ketemu kalau pool berputar (nomor baru masuk) — makanya `--loop`
+  yang jalan terus itu penting. Pool tiap paket bisa berbeda;
+  default paket 4324 (5GB Rp1).
 - **Enter = ya:** di prompt "Sudah bayar? Lanjut polling... (ya/tidak)",
   tekan Enter saja sudah dihitung `ya`.
 - **Nama & email random:** nama diambil dari daftar nama Indonesia

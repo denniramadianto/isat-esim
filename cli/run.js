@@ -923,14 +923,21 @@ async function dbMenu() {
   console.log(paint('gray', 'Nomor di sini hanya ID yang pernah terlihat — sebelum order, ketersediaan dicek ulang ke server.'));
   const act = await askChoice('Pilih: [1] harvest sekarang, [2] lihat nomor, [3] order nomor dari database, [0] kembali: ', ['1', '2', '3', '0']);
   if (act === '1') {
-    const roundsRaw = await ask('Berapa putaran sapuan? [1 putaran ≈ 40 panggilan, Enter = 1, ketik "loop" = jalan terus sampai Ctrl+C]: ');
+    const roundsRaw = await ask('Berapa putaran sapuan? [Enter = 1, ketik "loop" = jalan terus sampai Ctrl+C]: ');
     const loop = roundsRaw.toLowerCase() === 'loop';
     const rounds = loop ? 1 : Math.max(Number(roundsRaw || 1) || 1, 1);
+    let intervalSec = 0;
+    if (loop) {
+      const iv = await ask('Jeda antar putaran (detik)? [Enter = 0, langsung gas tanpa jeda; isi detik, misal 60]: ');
+      intervalSec = Math.max(Number(iv || 0) || 0, 0);
+    }
     console.log(paint('gray', loop
-      ? 'Mode LOOP — putaran berulang tiap 5 menit sampai Ctrl+C. Database tersimpan tiap putaran.'
+      ? (intervalSec > 0
+        ? `Mode LOOP — putaran berulang tiap ${intervalSec} dtk sampai Ctrl+C. Database tersimpan tiap putaran.`
+        : 'Mode LOOP — langsung gas tanpa jeda antar putaran, sampai Ctrl+C. Database tersimpan tiap putaran.')
       : `Menyapu ${rounds} putaran...`));
     await core.harvestNumbers({
-      rounds, loop, intervalSec: 300, delayMs: 500,
+      rounds, loop, intervalSec, delayMs: 500,
       onProgress: (p) => {
         if (p.roundDone) {
           process.stdout.write(`\n   putaran ${p.round} selesai — baru: ${p.newFound} nomor, total dicek: ${p.checked}`);
