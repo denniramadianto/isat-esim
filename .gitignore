@@ -1,0 +1,18 @@
+# Hasil order — BERISI DATA SENSITIF (QRIS, activation code eSIM)
+cli/out/
+out/
+*.har
+*.png
+order-*.json
+qris-*.png
+esim-*.png
+
+# Node
+node_modules/
+npm-debug.log*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
