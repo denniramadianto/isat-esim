@@ -74,12 +74,11 @@ function rupiah(n) {
 // modul hitam, jadi modul tetap persegi dan terbaca kamera HP.
 // Terverifikasi: QRIS 65 modul & LPA 37 modul hasil encode di sini
 // berhasil di-decode kembali (jsQR) dengan isi yang sama persis.
-function qrLines(text) {
-  const qr = qrcode(0, 'M'); // 0 = pilih versi otomatis
+function qrLines(text, ecLevel = 'M', quiet = 2) {
+  const qr = qrcode(0, ecLevel); // 0 = pilih versi otomatis
   qr.addData(text);
   qr.make();
   const n = qr.getModuleCount();
-  const quiet = 2; // zona kosong 2 modul di tiap sisi
   const total = n + quiet * 2;
   const dark = (r, c) => {
     const rr = r - quiet, cc = c - quiet;
@@ -97,38 +96,116 @@ function qrLines(text) {
   }
   return { lines: rows, width: total };
 }
+// Render QR sebagai pola braille (1 karakter = 2x4 modul) — jauh lebih
+// sempit dari half-block, untuk terminal HP yang sempit. Titik braille
+// berjarak sama secara horizontal & vertikal, jadi modul tetap persegi.
+function brailleLines(text) {
+  const qr = qrcode(0, 'L');
+  qr.addData(text);
+  qr.make();
+  const n = qr.getModuleCount();
+  const quiet = 2;
+  const total = n + quiet * 2;
+  const dark = (r, c) => {
+    const rr = r - quiet, cc = c - quiet;
+    return rr >= 0 && rr < n && cc >= 0 && cc < n && qr.isDark(rr, cc);
+  };
+  // bit tiap titik braille: (kolom, baris) -> bit
+  const BIT = [[0x01, 0x08], [0x02, 0x10], [0x04, 0x20], [0x40, 0x80]];
+  const rows = [];
+  for (let r = 0; r < total; r += 4) {
+    let line = '';
+    for (let c = 0; c < total; c += 2) {
+      let code = 0;
+      for (let dy = 0; dy < 4; dy++) {
+        for (let dx = 0; dx < 2; dx++) {
+          if (dark(r + dy, c + dx)) code |= BIT[dy][dx];
+        }
+      }
+      line += String.fromCharCode(0x2800 + code);
+    }
+    rows.push(line);
+  }
+  return { lines: rows, width: Math.ceil(total / 2) };
+}
+// Tampilkan QR di terminal. Mengembalikan true bila QR tampil, false bila
+// terminal terlalu sempit — QR yang terpotong/ter-wrap TIDAK ditampilkan
+// karena kelihatan seperti QR tapi tidak bisa di-scan (itu yang terjadi
+// di Termux 56 kolom: QR 69 kolom ikut ter-wrap jadi rusak).
+// Tangga adaptif: border putih besar (quiet 4) -> normal (2) -> hemat
+// (EC level L, modul lebih sedikit) -> border minimal (1) -> braille
+// (super ringkas, 1 karakter = 2x4 modul). Isi QR-nya tetap sama persis
+// di semua varian, hanya ketahanan koreksi error & ukuran tampil beda.
 function printQR(text, label) {
-  const { lines, width } = qrLines(text);
   const cols = process.stdout.columns || 80;
-  console.log('\n' + paint('bold', `📷 ${label} — scan dari layar ini:`));
-  if (cols < width) {
-    console.log(warn(`Lebar terminal ${cols} kolom, QR butuh ${width} kolom — putar HP / kecilkan font supaya tidak terpotong.`));
+  const variants = [
+    { ec: 'M', quiet: 4, note: '' },
+    { ec: 'M', quiet: 2, note: '' },
+    { ec: 'L', quiet: 2, note: ' (mode ringkas, EC level L, supaya muat di layar)' },
+    { ec: 'L', quiet: 1, note: ' (mode ringkas, EC level L, border minimal)' },
+  ];
+  for (const v of variants) {
+    const { lines, width } = qrLines(text, v.ec, v.quiet);
+    if (width <= cols) {
+      console.log('\n' + paint('bold', `📷 ${label} — scan dari layar ini:${v.note}`));
+      for (const line of lines) {
+        console.log('\x1b[47m\x1b[30m' + line + '\x1b[0m');
+      }
+      return true;
+    }
   }
-  for (const line of lines) {
-    console.log('\x1b[47m\x1b[30m' + line + '\x1b[0m');
+  const b = brailleLines(text);
+  if (b.width <= cols) {
+    console.log('\n' + paint('bold', `📷 ${label} — scan dari layar ini: (mode super ringkas, braille — kalau gagal scan, buka file PNG di ./out/)`));
+    for (const line of b.lines) {
+      console.log('\x1b[47m\x1b[30m' + line + '\x1b[0m');
+    }
+    return true;
   }
+  console.log('\n' + warn(`Terminal terlalu sempit (${cols} kolom) untuk menampilkan QR ini — QR tidak ditampilkan supaya tidak rusak.`));
+  console.log(paint('gray', '   Putar HP ke landscape / kecilkan font, atau scan file PNG-nya yang tersimpan di ./out/.'));
+  return false;
 }
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
 // ---------------------------------------------------------------- input
+// Pembaca baris berbasis antrean: event 'line' disimpan dulu, jadi tidak
+// ada jawaban yang hilang walau input (pipe/file/pty) datang lebih cepat
+// dari prompt berikutnya. (Bug lama: flag stdinClosed dari event 'close'
+// membuat semua ask() sesudah baris pertama langsung mengembalikan '',
+// sehingga kriteria hunt jadi "apa saja".)
 let rl = null;
-let stdinClosed = false;
+let lineQueue = [];
+let lineWaiters = [];
+let stdinEnded = false;
 function getRl() {
   if (!rl) {
     rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    rl.once('close', () => { stdinClosed = true; });
+    rl.on('line', (line) => {
+      if (lineWaiters.length) lineWaiters.shift()(line);
+      else lineQueue.push(line);
+    });
+    rl.on('close', () => {
+      stdinEnded = true;
+      while (lineWaiters.length) lineWaiters.shift()('');
+    });
   }
   return rl;
 }
 function ask(q) {
-  if (stdinClosed) return Promise.resolve('');
-  return new Promise((resolve) => getRl().question(q, (a) => resolve(a.trim())));
+  getRl();
+  process.stdout.write(q);
+  return new Promise((resolve) => {
+    if (lineQueue.length) return resolve(lineQueue.shift().trim());
+    if (stdinEnded) return resolve('');
+    lineWaiters.push((line) => resolve(line.trim()));
+  });
 }
 async function askChoice(q, valid) {
   for (;;) {
-    if (stdinClosed) return '0'; // stdin ditutup (misal pipe habis) -> keluar
+    if (stdinEnded && !lineQueue.length) return '0'; // input habis -> keluar
     const a = (await ask(q)).toLowerCase();
     if (!valid || valid.includes(a)) return a;
     console.log(err(`Pilihan tidak valid. Pilih: ${valid.join(', ')}`));
@@ -243,11 +320,8 @@ async function pickPackage() {
   return pkgs[Number(pick || 1) - 1] || pkgs[0];
 }
 
-async function pickNumber(pkg) {
-  section('Pilih Nomor');
-  console.log(`Paket: ${paint('bold', pkg.name)} — ${paint('green', rupiah(pkg.price))}`);
-  const mode = await askChoice('Cari nomor: [1] manual, [2] auto hunt nomor cantik: ', ['1', '2', '']);
-  if (mode === '2') return huntFlow(pkg);
+// Cari nomor manual: tampilkan daftar, pilih satu. null = batal.
+async function manualPick(pkg) {
   for (;;) {
     const search = await ask('Cari digit nomor (min 3, Enter = acak): ');
     if (search && search.length < 3) { console.log(err('Minimal 3 digit.')); continue; }
@@ -259,11 +333,37 @@ async function pickNumber(pkg) {
     all.forEach((n, i) => {
       console.log(`  ${paint('cyan', String(i + 1) + '.')} ${paint('bold', n.number)}  [${n.label}] id=${n.id}`);
     });
-    const sel = await ask('Pilih nomor [1-..], "r" acak lagi, "s" cari lagi: ');
+    const sel = await ask('Pilih nomor [1-..], "r" acak lagi, "s" cari lagi, "batal" kembali: ');
+    if (sel.toLowerCase() === 'batal') return null;
     if (sel.toLowerCase() === 'r' || sel.toLowerCase() === 's') continue;
     const chosen = all[Number(sel) - 1];
     if (!chosen) { console.log(err('Pilihan tidak ada.')); continue; }
     return chosen;
+  }
+}
+
+// Pilih nomor (manual / hunt) + KONFIRMASI sebelum lanjut order.
+// Mengembalikan nomor terpilih, atau null bila batal.
+async function pickNumber(pkg) {
+  section('Pilih Nomor');
+  console.log(`Paket: ${paint('bold', pkg.name)} — ${paint('green', rupiah(pkg.price))}`);
+  let mode = await askChoice('Cari nomor: [1] manual, [2] auto hunt nomor cantik: ', ['1', '2', '']);
+  for (;;) {
+    let chosen = null;
+    if (mode === '2') chosen = await huntFlow(pkg);
+    else chosen = await manualPick(pkg);
+    if (!chosen) {
+      const next = await askChoice('Nomor belum dipilih. [1] cari manual, [2] auto hunt, [0] batal kembali: ', ['1', '2', '0']);
+      if (next === '0') return null;
+      mode = next;
+      continue;
+    }
+    console.log(`\nNomor terpilih: ${paint('bold', paint('green', chosen.number))} [${chosen.label}] id=${chosen.id}`);
+    const conf = await ask('Pakai nomor ini? [Enter = ya, ketik "lagi" = cari nomor lain]: ');
+    if (conf === '') return chosen;
+    const next = await askChoice('Cari lagi: [1] manual, [2] auto hunt, [0] batal: ', ['1', '2', '0']);
+    if (next === '0') return null;
+    mode = next;
   }
 }
 
@@ -348,14 +448,22 @@ async function inputNameEmail() {
   return { name, email, phone };
 }
 
-async function orderFlow() {
-  const pkg = await pickPackage();
-  let chosen = await pickNumber(pkg);
-  if (!chosen) {
-    console.log(info('Hunt gagal — kembali ke menu utama.'));
-    return;
+async function orderFlow(preselected) {
+  let pkg, chosen;
+  if (preselected) {
+    // dari menu Hunt (nomor sudah dipilih + dikonfirmasi di sana)
+    ({ pkg, chosen } = preselected);
+    section('Order eSIM Baru');
+    console.log(`Paket: ${paint('bold', pkg.name)} — ${paint('green', rupiah(pkg.price))}`);
+    console.log(`Nomor: ${paint('bold', paint('green', chosen.number))} [${chosen.label}]`);
+  } else {
+    pkg = await pickPackage();
+    chosen = await pickNumber(pkg);
+    if (!chosen) {
+      console.log(info('Dibatalkan — kembali ke menu utama.'));
+      return;
+    }
   }
-  console.log(`\nNomor terpilih: ${paint('bold', paint('green', chosen.number))} [${chosen.label}]`);
   const { name, email, phone } = await inputNameEmail();
   console.log(`\n${paint('bold', 'Ringkasan:')} ${chosen.number} | ${pkg.name} ${rupiah(pkg.price)} | ${name} | ${email}`);
   const okCreate = await askChoice('Buat order QRIS nyata? (ya/tidak): ', ['ya', 'tidak']);
@@ -385,7 +493,10 @@ async function orderFlow() {
   console.log(`   ${paint('bold', 'Nomor    :')} ${result.order_number} — ${result.package_name}`);
   console.log(`   ${paint('bold', 'Total    :')} ${paint('green', rupiah(result.total_price))} — QRIS berlaku ${result.expire_minutes} menit`);
   console.log(`   ${paint('bold', 'QR PNG   :')} ${result.qris_png}`);
-  printQR(result.qris_raw, 'QRIS — scan pakai aplikasi pembayaran apa saja');
+  const qrShown = printQR(result.qris_raw, 'QRIS — scan pakai aplikasi pembayaran apa saja');
+  if (!qrShown) {
+    console.log(paint('bold', `   Scan file PNG-nya saja: ${result.qris_png}`));
+  }
   console.log(paint('gray', `   QRIS raw: ${result.qris_raw}`));
   const goWatch = await askChoice('\nSudah bayar? Lanjut polling status sampai paid? (ya/tidak): ', ['ya', 'tidak']);
   if (goWatch === 'ya') await watchOrder(result.order_id, result.order_code);
@@ -510,8 +621,15 @@ ${paint('bold', 'MENU UTAMA')}
       if (choice === '1') await orderFlow();
       else if (choice === '2') {
         const pkg = await pickPackage();
-        const hit = await huntFlow(pkg);
-        if (hit) console.log(`\nNomor ketemu: ${paint('bold', paint('green', hit.number))} [${hit.label}] id=${hit.id} — lanjut ke menu 1 untuk order.`);
+        for (;;) {
+          const hit = await huntFlow(pkg);
+          if (!hit) { console.log(info('Tidak ketemu — kembali ke menu utama.')); break; }
+          console.log(`\nNomor ketemu: ${paint('bold', paint('green', hit.number))} [${hit.label}] id=${hit.id} (${hit.number.length} digit)`);
+          const act = await askChoice('Lanjut: [1] order dengan nomor ini, [2] hunt lagi, [0] kembali ke menu: ', ['1', '2', '0']);
+          if (act === '1') { await orderFlow({ pkg, chosen: hit }); break; }
+          if (act === '0') break;
+          // '2' -> hunt lagi dengan kriteria baru
+        }
       }
       else if (choice === '3') await packagesMenu();
       else if (choice === '4') await statusMenu();
@@ -536,4 +654,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { mainMenu, randomName, randomEmail, printQR, qrLines };
+module.exports = { mainMenu, randomName, randomEmail, printQR, qrLines, brailleLines };

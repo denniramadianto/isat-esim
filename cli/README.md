@@ -10,12 +10,17 @@ Endpoint terverifikasi dari HAR 1–4 (15 Nov 2026) — lihat
 ```
 im3-esim.js   CORE ENGINE — API IM3 + subcommand. Dipakai bot Telegram.
 run.js        UI TERMINAL — menu interaktif berwarna, riwayat, nama/email random.
-telegram.js   (rencana) bot Telegram — memakai core, bukan file UI.
+telegram.js   BOT TELEGRAM — memakai core, bukan file UI.
 ```
 
 `run.js` hanya tampilan dan input; semua panggilan ke IM3 lewat
 `require('./im3-esim.js')`. Logika API tidak diduplikasi. File core
 sengaja dijaga stabil supaya bot Telegram bisa memakainya apa adanya.
+`telegram.js` juga begitu: tanpa dependensi, Bot API Telegram dipanggil
+langsung dengan `fetch` (long polling), token hanya dari env
+`TELEGRAM_BOT_TOKEN`. Jalankan: `TELEGRAM_BOT_TOKEN=&lt;token&gt; node telegram.js`.
+Perintah bot: `/start /order /hunt /paket /status /esim /cancel`.
+Order & QR eSIM hanya di chat privat — kode aktivasi itu rahasia.
 
 ## Cara pakai
 
@@ -40,9 +45,14 @@ node im3-esim.js run        # wizard interaktif mode lama
 ```
 
 - **Order eSIM Baru:** pilih paket → pilih nomor (manual / auto hunt) →
-  nama (ketik manual / random nama Indonesia) → email (ketik manual /
-  random dari nama tanpa spasi + `@sir.my.id`) → WhatsApp opsional →
-  konfirmasi → order QRIS → polling sampai paid → QR eSIM.
+  **konfirmasi nomor terpilih** (Enter = pakai, ketik `lagi` = cari nomor
+  lain) → nama (ketik manual / random nama Indonesia) → email (ketik
+  manual / random dari nama tanpa spasi + `@sir.my.id`) → WhatsApp
+  opsional → konfirmasi → order QRIS → polling sampai paid → QR eSIM.
+  Nomor hasil hunt tidak langsung di-order tanpa ditanya dulu.
+- **Hunt Nomor Cantik (menu 2):** setelah ketemu nomor, ada pilihan
+  `[1] order dengan nomor ini, [2] hunt lagi, [0] kembali ke menu` —
+  nomor hasil hunt tidak hilang begitu saja.
 - **Nama & email random:** nama diambil dari daftar nama Indonesia
   (misal `Sari Laksmana` → `sarilaksmana@sir.my.id`). **Konfirmasi email
   tidak ditanyakan** — otomatis diisi sama dengan email yang dipakai.
@@ -52,11 +62,21 @@ node im3-esim.js run        # wizard interaktif mode lama
   terminal** (dari activation code). String raw tetap ditampilkan kecil
   di bawahnya sebagai cadangan. Render memakai teknik half-block
   (1 karakter = 2 modul vertikal) dengan latar putih + modul hitam,
-  lebar QRIS ~69 kolom — kalau terminal lebih sempit, akan ada peringatan
-  putar HP / kecilkan font. Encoder QR: `qrcode.js` (vendored, MIT,
+  dan **border putih (quiet zone) yang besar bila muat di layar**.
+  Encoder QR: `qrcode.js` (vendored, MIT,
   kazuhikoarase/qrcode-generator, tanpa `npm install`).
   Terverifikasi: QR hasil render di-decode kembali (jsQR) dan isinya
   sama persis dengan string QRIS / LPA aslinya.
+- **QR adaptif — tidak pernah tampil rusak:** lebar QRIS (285 karakter)
+  butuh 73 kolom (border besar) / 69 kolom (normal). Bila terminal
+  lebih sempit, ukuran diturunkan bertahap: EC level L (modul lebih
+  sedikit) → border minimal → **braille** (1 karakter = 2x4 modul,
+  QRIS cuma 33 kolom). Bila semua varian tetap tidak muat, QR **tidak
+  ditampilkan sama sekali** (QR yang ter-wrap kelihatan seperti QR tapi
+  tidak bisa di-scan — itu yang terjadi di Termux 56 kolom sebelum
+  perbaikan ini) dan user diarahkan scan file PNG di `./out/` atau
+  putar HP ke landscape. Semua varian (termasuk braille) terverifikasi
+  bisa di-decode kembali.
 - **Riwayat Pesanan:** membaca `out/order-*.json` — daftar order yang
   pernah dibuat dari CLI ini, lengkap dengan detail dan aksi (cek status /
   lanjut polling / ambil QR eSIM).
